@@ -6,6 +6,7 @@ import { getClientKeyIp } from "./middleware/clientIp.js";
 import { LoginGuard } from "./auth/loginGuard.js";
 import { defenseRouter } from "./routes/defense.js";
 import { expiredTokenRouter, loginRouter } from "./routes/login.js";
+import { resourceRouter } from "./routes/resource.js";
 
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -18,6 +19,7 @@ export interface AppDeps {
  */
 export function createApp(env: Env, deps: AppDeps = {}): Express {
   const now = deps.now ?? Date.now;
+  const startedAt = now();
   const defense = new DefenseState(now());
   const loginGuard = new LoginGuard();
   defense.onReset(() => loginGuard.reset());
@@ -34,25 +36,30 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     cors({
       origin: env.CORS_ORIGIN,
       allowedHeaders: ["Content-Type", "Authorization", "X-Forwarded-For"],
-      exposedHeaders: ["Retry-After"],
+      // Without this the browser can't read these headers on cross-origin responses.
+      exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining"],
     }),
   );
 
   app.use(express.json({ limit: "10kb" }));
 
-  // Unlimited routes.
+  // 1. Unlimited routes.
   app.get("/api/health", (_req, res) => {
     res.status(200).json({
       status: "healthy",
       service: "Rate Limit Royale API",
+      uptimeS: Math.floor((now() - startedAt) / 1000),
+      algorithm: defense.config.algorithm,
+      keyBy: defense.config.keyBy,
     });
   });
   app.use("/api/defense", defenseRouter(defense, now));
 
-  // Login: its own IP-keyed failure limiter, independent of the configured defense.
+  // 2. Login: its own IP-keyed failure limiter, independent of the configured defense.
   const loginDeps = { secret: env.JWT_SECRET, guard: loginGuard, now };
   app.use("/api/login", loginRouter(loginDeps));
 
+  // 3. Demo helpers.
   if (env.DEMO_MODE) {
     // Demo-only: a correctly signed but already-expired token (round 4's expired-token client).
     app.use("/api/demo/expired-token", expiredTokenRouter(loginDeps));
@@ -62,6 +69,10 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     });
   }
 
+  // 4. Protected resource: authenticate → key selection → limiter → handler.
+  app.use("/api/resource", resourceRouter({ secret: env.JWT_SECRET, defense, now }));
+
+  // 5. Fallbacks: JSON 404 and error handler (no stack traces in responses).
   app.use((_req, res) => {
     res.status(404).json({ error: "not_found" });
   });
