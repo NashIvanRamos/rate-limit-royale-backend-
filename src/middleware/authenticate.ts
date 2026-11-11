@@ -31,6 +31,8 @@ function unauthorized(res: Response, reason: AuthFailureReason): void {
       ? `Bearer realm="${REALM}"`
       : `Bearer realm="${REALM}", error="invalid_token", error_description="${reason}"`,
   );
+  // Read by the stats middleware (task 07).
+  res.locals.authFailureReason = reason;
   res.status(401).json({ error: "unauthorized", reason });
 }
 

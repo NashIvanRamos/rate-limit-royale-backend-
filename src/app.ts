@@ -7,6 +7,8 @@ import { LoginGuard } from "./auth/loginGuard.js";
 import { defenseRouter } from "./routes/defense.js";
 import { expiredTokenRouter, loginRouter } from "./routes/login.js";
 import { resourceRouter } from "./routes/resource.js";
+import { statsRouter } from "./routes/stats.js";
+import { StatsCollector } from "./middleware/stats.js";
 
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -22,12 +24,15 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   const startedAt = now();
   const defense = new DefenseState(now());
   const loginGuard = new LoginGuard();
+  const stats = new StatsCollector(now());
   defense.onReset(() => loginGuard.reset());
+  defense.onReset(() => stats.reset(now()));
 
   const app = express();
   // Exposed for tests and later middleware. Not reachable over HTTP.
   app.locals.defense = defense;
   app.locals.loginGuard = loginGuard;
+  app.locals.stats = stats;
 
   app.disable("x-powered-by");
   app.set("trust proxy", env.TRUST_PROXY);
@@ -40,6 +45,9 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining"],
     }),
   );
+
+  // Before express.json(), so a login with malformed JSON (400 from the body parser) is still counted.
+  app.use(stats.middleware());
 
   app.use(express.json({ limit: "10kb" }));
 
@@ -54,6 +62,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     });
   });
   app.use("/api/defense", defenseRouter(defense, now));
+  app.use("/api/stats", statsRouter(stats, defense));
 
   // 2. Login: its own IP-keyed failure limiter, independent of the configured defense.
   const loginDeps = { secret: env.JWT_SECRET, guard: loginGuard, now };
