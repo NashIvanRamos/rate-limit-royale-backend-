@@ -7,22 +7,9 @@
  */
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { ALGORITHMS, CASES, realClock, runDay1, type Algorithm, type CheckResult, type Clock } from "../scripts/day1Checks.js";
-import { fakeClock, startServer, testEnv } from "./helpers/server.js";
-
-function fakeDay1Clock(): { clock: Clock; now: () => number } {
-  const fc = fakeClock();
-  return {
-    now: fc.now,
-    clock: {
-      slackMs: 0,
-      now: fc.now,
-      async waitUntil(t) {
-        if (t > fc.now()) fc.set(t);
-      },
-    },
-  };
-}
+import { ALGORITHMS, CASES, realClock, runDay1, type Algorithm, type CheckResult } from "../scripts/day1Checks.js";
+import { fakeRunnerClock } from "./helpers/clock.js";
+import { startServer, testEnv } from "./helpers/server.js";
 
 function assertAllCases(results: CheckResult[], algorithm: Algorithm) {
   assert.deepEqual(
@@ -37,7 +24,7 @@ function assertAllCases(results: CheckResult[], algorithm: Algorithm) {
 describe("Day 1 checks (fake clock)", () => {
   for (const algorithm of ALGORITHMS) {
     test(algorithm, async (t) => {
-      const { clock, now } = fakeDay1Clock();
+      const { clock, now } = fakeRunnerClock();
       const server = await startServer(testEnv(), { now });
       try {
         const results = await runDay1(algorithm, { baseUrl: server.baseUrl, clock });
@@ -67,7 +54,7 @@ describe("Day 1 checks (real clock)", () => {
 
 describe("Day 1 checks catch regressions", () => {
   test("case 4 fails with a clear hint when DEMO_MODE=false", async () => {
-    const { clock, now } = fakeDay1Clock();
+    const { clock, now } = fakeRunnerClock();
     const server = await startServer(testEnv({ DEMO_MODE: "false" }), { now });
     try {
       const results = await runDay1("fixed", { baseUrl: server.baseUrl, clock });
