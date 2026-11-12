@@ -40,3 +40,17 @@ export function assertValidOptions({ maxRequests, windowMs, epochMs }: LimiterOp
     throw new RangeError(`epochMs must be a finite number, got ${epochMs}`);
   }
 }
+
+/**
+ * What the request path talks to (tasks2/02). Async, so a store can live outside the process (Redis) without
+ * changing the middleware. In-memory limiters are wrapped by MemoryStore; their own API stays synchronous.
+ */
+export interface LimiterStore {
+  readonly name: Algorithm;
+  allow(key: string, now: number): Promise<LimitDecision>;
+  /** Keys currently tracked. Used by /api/stats. */
+  size(): Promise<number>;
+}
+
+/** Builds the store for a deploy. `options.epochMs` is the deploy time (fixed-window alignment). */
+export type LimiterStoreFactory = (algorithm: Algorithm, options: LimiterOptions) => LimiterStore;

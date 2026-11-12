@@ -3,7 +3,7 @@
  *
  * Pipeline order matters (design doc §5):
  *   1. authenticate: invalid or missing token → 401 and STOP (the limiter is never touched)
- *   2. rateLimit:    key selection + limiter.allow() → 429 + Retry-After when denied
+ *   2. rateLimit:    key selection + store.allow() → 429 + Retry-After when denied
  *   3. handler:      200
  */
 import { Router } from "express";

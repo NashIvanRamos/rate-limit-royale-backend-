@@ -2,7 +2,8 @@
  * The active defense: the player's chosen algorithm, limits and keying mode, plus the limiter instance
  * built from them. All in memory. Each `createApp()` owns its own DefenseState so tests stay isolated.
  */
-import { ALGORITHMS, createLimiter, type Algorithm, type RateLimiter } from "../algorithms/index.js";
+import { ALGORITHMS, type Algorithm, type LimiterStore, type LimiterStoreFactory } from "../algorithms/index.js";
+import { memoryStoreFactory } from "../algorithms/memoryStore.js";
 
 export type KeyBy = "ip" | "user";
 export const KEY_BY: readonly KeyBy[] = ["ip", "user"];
@@ -38,14 +39,19 @@ type ResetListener = () => void;
 
 export class DefenseState {
   private _config: DefenseConfig;
-  private _limiter: RateLimiter;
+  private _store: LimiterStore;
   private _deployedAt: number;
   private readonly resetListeners: ResetListener[] = [];
 
-  constructor(now: number, config: DefenseConfig = DEFAULT_DEFENSE) {
+  /** `storeFactory` picks where limiter state lives: in memory (default) or, later, Redis (tasks2/04). */
+  constructor(
+    now: number,
+    config: DefenseConfig = DEFAULT_DEFENSE,
+    private readonly storeFactory: LimiterStoreFactory = memoryStoreFactory,
+  ) {
     this._config = { ...config };
     this._deployedAt = now;
-    this._limiter = DefenseState.build(this._config, now);
+    this._store = this.build(this._config, now);
   }
 
   get config(): Readonly<DefenseConfig> {
@@ -53,8 +59,8 @@ export class DefenseState {
   }
 
   /** Read at request time, never cached, so a redeploy mid-round takes effect immediately. */
-  get limiter(): RateLimiter {
-    return this._limiter;
+  get store(): LimiterStore {
+    return this._store;
   }
 
   get deployedAt(): number {
@@ -66,11 +72,11 @@ export class DefenseState {
     this.resetListeners.push(listener);
   }
 
-  /** Replaces the config, builds a fresh limiter (all keys cleared), and resets dependent state. */
+  /** Replaces the config, builds a fresh store (all keys cleared), and resets dependent state. */
   deploy(config: DefenseConfig, now: number): DefenseSnapshot {
     this._config = { ...config };
     this._deployedAt = now;
-    this._limiter = DefenseState.build(this._config, now);
+    this._store = this.build(this._config, now);
     for (const listener of this.resetListeners) listener();
     return this.snapshot();
   }
@@ -79,8 +85,8 @@ export class DefenseState {
     return { config: { ...this._config }, deployedAt: this._deployedAt, windowEpochMs: this._deployedAt };
   }
 
-  private static build(config: DefenseConfig, now: number): RateLimiter {
-    return createLimiter(config.algorithm, {
+  private build(config: DefenseConfig, now: number): LimiterStore {
+    return this.storeFactory(config.algorithm, {
       maxRequests: config.maxRequests,
       windowMs: config.windowMs,
       epochMs: now,

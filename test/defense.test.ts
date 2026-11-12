@@ -54,35 +54,35 @@ describe("DefenseState", () => {
   test("boots with the default config", () => {
     const s = new DefenseState(1000);
     assert.deepEqual(s.config, DEFAULT_DEFENSE);
-    assert.equal(s.limiter.name, "fixed");
+    assert.equal(s.store.name, "fixed");
     assert.equal(s.deployedAt, 1000);
   });
 
-  test("deploy resets limiter state", () => {
+  test("deploy resets limiter state", async () => {
     const s = new DefenseState(0, { ...VALID, maxRequests: 5 });
-    for (let i = 0; i < 5; i++) s.limiter.allow("ip:1.1.1.1", 10);
-    assert.equal(s.limiter.allow("ip:1.1.1.1", 10).allowed, false);
+    for (let i = 0; i < 5; i++) await s.store.allow("ip:1.1.1.1", 10);
+    assert.equal((await s.store.allow("ip:1.1.1.1", 10)).allowed, false);
 
     s.deploy({ ...VALID, maxRequests: 5 }, 20);
-    assert.equal(s.limiter.size(), 0);
-    assert.equal(s.limiter.allow("ip:1.1.1.1", 20).allowed, true);
+    assert.equal((await s.store.size()), 0);
+    assert.equal((await s.store.allow("ip:1.1.1.1", 20)).allowed, true);
   });
 
   test("switching algorithm changes the limiter", () => {
     const s = new DefenseState(0);
     for (const algorithm of ["sliding", "token", "fixed"] as const) {
       s.deploy({ ...VALID, algorithm }, 0);
-      assert.equal(s.limiter.name, algorithm);
+      assert.equal(s.store.name, algorithm);
     }
   });
 
-  test("fixed windows align to deploy time", () => {
+  test("fixed windows align to deploy time", async () => {
     const s = new DefenseState(0);
     const snap = s.deploy({ algorithm: "fixed", maxRequests: 5, windowMs: 1000, keyBy: "ip" }, 12_345);
     assert.equal(snap.windowEpochMs, 12_345);
-    for (let i = 0; i < 5; i++) s.limiter.allow("k", 12_345);
-    assert.equal(s.limiter.allow("k", 12_345 + 999).retryAfterMs, 1);
-    assert.equal(s.limiter.allow("k", 12_345 + 1000).allowed, true);
+    for (let i = 0; i < 5; i++) await s.store.allow("k", 12_345);
+    assert.equal((await s.store.allow("k", 12_345 + 999)).retryAfterMs, 1);
+    assert.equal((await s.store.allow("k", 12_345 + 1000)).allowed, true);
   });
 
   test("reset listeners run on every deploy", () => {
@@ -134,18 +134,18 @@ describe("/api/defense over HTTP", () => {
 
     const current = await (await fetch(`${server.baseUrl}/api/defense`)).json();
     assert.deepEqual(current.config, VALID);
-    assert.equal(server.app.locals.defense.limiter.name, "sliding");
+    assert.equal(server.app.locals.defense.store.name, "sliding");
   });
 
   test("POST resets limiter state", async () => {
     await post({ ...VALID, maxRequests: 5 });
     const { defense } = server.app.locals;
-    for (let i = 0; i < 6; i++) defense.limiter.allow("ip:9.9.9.9", clock.now());
-    assert.equal(defense.limiter.allow("ip:9.9.9.9", clock.now()).allowed, false);
+    for (let i = 0; i < 6; i++) await defense.store.allow("ip:9.9.9.9", clock.now());
+    assert.equal((await defense.store.allow("ip:9.9.9.9", clock.now())).allowed, false);
 
     await post({ ...VALID, maxRequests: 5 });
-    assert.equal(server.app.locals.defense.limiter.size(), 0);
-    assert.equal(server.app.locals.defense.limiter.allow("ip:9.9.9.9", clock.now()).allowed, true);
+    assert.equal((await server.app.locals.defense.store.size()), 0);
+    assert.equal((await server.app.locals.defense.store.allow("ip:9.9.9.9", clock.now())).allowed, true);
   });
 
   test("POST invalid config → 400 with details, config unchanged", async () => {
