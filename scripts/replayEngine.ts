@@ -25,6 +25,12 @@ export interface ReplayOptions {
   sequential?: boolean;
   /** Gap between setup and the first event. Real clock only. */
   leadMs?: number;
+  /**
+   * Multi-node mode (tasks2/01): deploy to and read stats from each of these nodes directly, while attack traffic
+   * still goes to `baseUrl` (the load balancer). Needed while state is per node: a deploy through the load balancer
+   * would reach only one node. Defaults to [baseUrl].
+   */
+  controlUrls?: string[];
 }
 
 export interface ClientSummary {
@@ -52,8 +58,11 @@ export interface ReplayResult {
   byClient: Record<string, ClientSummary>;
   /** Successful logins during setup. They show up in /api/stats but aren't tallied. */
   setupLogins: number;
+  /** Summed over every control node. */
   stats: StatsSnapshot;
   statsCheck: StatsCheck;
+  /** Requests per node (from X-Node-Id), for multi-node runs. */
+  nodeSplit: Record<string, number>;
 }
 
 export class ReplayError extends Error {}
@@ -69,7 +78,7 @@ async function call(baseUrl: string, path: string, ip: string, init: { method?: 
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
   const body = (await res.json().catch(() => null)) as any;
-  return { status: res.status, body };
+  return { status: res.status, body, nodeId: res.headers.get("x-node-id") ?? undefined };
 }
 
 /** Setup: one token (or none) per client. Logins run in parallel, each from the client's own IP. */
@@ -136,14 +145,46 @@ export function compareWithStats(records: readonly RequestRecord[], setupLogins:
   return { matches: mismatches.length === 0, mismatches };
 }
 
+/** Adds up per-node stats. Each node only counts what it served, so the sum is the cluster's total. */
+export function sumStats(snapshots: readonly StatsSnapshot[]): StatsSnapshot {
+  if (snapshots.length === 1) return snapshots[0]!;
+  const add = <T extends object>(a: T, b: T): T => {
+    const out = { ...a } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(b)) {
+      out[k] = typeof v === "number" ? (out[k] as number) + v : v && typeof v === "object" ? add(out[k] as any, v as any) : v;
+    }
+    return out as T;
+  };
+  const topKeys = new Map<string, StatsSnapshot["topKeys"][number]>();
+  for (const s of snapshots) {
+    for (const k of s.topKeys) {
+      const t = topKeys.get(k.key) ?? { key: k.key, requests: 0, allowed: 0, blocked: 0 };
+      topKeys.set(k.key, { key: k.key, requests: t.requests + k.requests, allowed: t.allowed + k.allowed, blocked: t.blocked + k.blocked });
+    }
+  }
+  return {
+    since: Math.min(...snapshots.map((s) => s.since)),
+    resource: snapshots.map((s) => s.resource).reduce(add),
+    login: snapshots.map((s) => s.login).reduce(add),
+    trackedKeys: snapshots.reduce((n, s) => n + s.trackedKeys, 0),
+    topKeys: [...topKeys.values()].sort((a, b) => b.requests - a.requests || a.key.localeCompare(b.key)).slice(0, 10),
+    untrackedKeyRequests: snapshots.reduce((n, s) => n + s.untrackedKeyRequests, 0),
+  };
+}
+
 export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
   const { baseUrl, scenario, config, clock } = opts;
   const clients = new Map(scenario.clients.map((c) => [c.id, c]));
 
   // 1. Deploy.
+  const controlUrls = opts.controlUrls?.length ? opts.controlUrls : [baseUrl];
   const sentAt = Date.now();
-  const deployed = await call(baseUrl, "/api/defense", "127.0.0.1", { body: config });
-  if (deployed.status !== 200) throw new ReplayError(`deploy → HTTP ${deployed.status} ${JSON.stringify(deployed.body)}`);
+  const deploys = await Promise.all(controlUrls.map((url) => call(url, "/api/defense", "127.0.0.1", { body: config })));
+  deploys.forEach((d, i) => {
+    if (d.status !== 200) throw new ReplayError(`deploy to ${controlUrls[i]} → HTTP ${d.status} ${JSON.stringify(d.body)}`);
+  });
+  // With several nodes each has its own epoch (a few ms apart). Round 2 aims at the first node's boundary.
+  const deployed = deploys[0]!;
   clock.calibrate?.(deployed.body.deployedAt, sentAt, Date.now());
 
   // 2. Setup.
@@ -161,6 +202,7 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     const t0 = performance.now();
     let status = 0;
     let reason: string | undefined;
+    let nodeId: string | undefined;
     try {
       const res = await call(baseUrl, e.path, client.ip, {
         method: e.path === "/api/login" ? "POST" : "GET",
@@ -169,10 +211,11 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
       });
       status = res.status;
       reason = res.body?.reason ?? res.body?.error;
+      nodeId = res.nodeId;
     } catch {
       status = 0;
     }
-    return { ...e, legit: client.legit, status, reason, latencyMs: performance.now() - t0 };
+    return { ...e, legit: client.legit, status, reason, nodeId, latencyMs: performance.now() - t0 };
   };
 
   const records: RequestRecord[] = [];
@@ -204,9 +247,17 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     else if (r.status === 401) s.rejectedAuth++;
   }
 
-  const statsRes = await call(baseUrl, "/api/stats", "127.0.0.1");
-  if (statsRes.status !== 200) throw new ReplayError(`GET /api/stats → HTTP ${statsRes.status}`);
-  const stats = statsRes.body as StatsSnapshot;
+  const snapshots = await Promise.all(
+    controlUrls.map(async (url) => {
+      const res = await call(url, "/api/stats", "127.0.0.1");
+      if (res.status !== 200) throw new ReplayError(`GET ${url}/api/stats → HTTP ${res.status}`);
+      return res.body as StatsSnapshot;
+    }),
+  );
+  const stats = sumStats(snapshots);
+
+  const nodeSplit: Record<string, number> = {};
+  for (const r of records) if (r.nodeId) nodeSplit[r.nodeId] = (nodeSplit[r.nodeId] ?? 0) + 1;
 
   return {
     scenario: { id: scenario.id, name: scenario.name },
@@ -220,5 +271,6 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     setupLogins,
     stats,
     statsCheck: compareWithStats(records, setupLogins, stats),
+    nodeSplit,
   };
 }

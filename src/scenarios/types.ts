@@ -68,5 +68,7 @@ export interface RequestRecord extends ScenarioEvent {
   status: number;
   /** `reason` for a 401 from /api/resource, otherwise the body's `error`. */
   reason?: string;
+  /** Which server answered (X-Node-Id), in multi-node setups. */
+  nodeId?: string;
   latencyMs: number;
 }
