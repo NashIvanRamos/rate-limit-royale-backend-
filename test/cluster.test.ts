@@ -49,6 +49,28 @@ for (const lb of ["round-robin", "sticky"] as LbMode[]) {
       assert.deepEqual(await res.json(), { ip: "10.0.0.7" });
     });
 
+    test(`the leak, measured: 30 requests from one IP at "5 per minute" → ${lb === "round-robin" ? "15 (5 per node)" : "5"} allowed`, async () => {
+      // State is per node, so deploy to every node directly (a deploy through NGINX would reach only one).
+      const config = { algorithm: "fixed", maxRequests: 5, windowMs: 60_000, keyBy: "ip" };
+      for (const url of cluster.nodeUrls) {
+        const res = await fetch(`${url}/api/defense`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(config) });
+        assert.equal(res.status, 200);
+      }
+      const login = await fetch(`${cluster.lbUrl}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.6.6.6" },
+        body: JSON.stringify({ username: "user01", password: "pass-user01" }),
+      });
+      const { token } = (await login.json()) as { token: string };
+      let allowed = 0;
+      for (let i = 0; i < 30; i++) {
+        const res = await fetch(`${cluster.lbUrl}/api/resource`, { headers: { Authorization: `Bearer ${token}`, "X-Forwarded-For": "10.6.6.6" } });
+        await res.body?.cancel();
+        if (res.status === 200) allowed++;
+      }
+      assert.equal(allowed, lb === "round-robin" ? 3 * config.maxRequests : config.maxRequests);
+    });
+
     if (lb === "round-robin") {
       test("requests from one client rotate across all nodes", async () => {
         const seen: string[] = [];

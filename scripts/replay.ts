@@ -8,6 +8,10 @@
  *
  * Options: --round 1..5|all (default all), --algorithm fixed|sliding|token, --max 5..100, --window 1000..60000,
  *          --keyBy ip|user|both. Defaults are the server's default defense (fixed, 10 per 10000ms, ip).
+ *
+ * Multi-node (tasks2): `--cluster` targets `npm run cluster` (load balancer :8080, nodes :3001-3003).
+ *          `--nodes url1,url2,…` lists the nodes explicitly. Deploys and stats go to every node directly, attack
+ *          traffic goes through BASE_URL (the load balancer), and the per-node split is printed.
  * BASE_URL defaults to http://localhost:3000. Needs DEMO_MODE=true (round 4's expired token).
  * Redeploys the defense for each run and leaves the server on the default defense.
  * Exits 1 if any replay disagrees with /api/stats or hits network errors.
@@ -18,7 +22,8 @@ import { SCENARIOS, getScenario } from "../src/scenarios/rounds.js";
 import { realClock } from "./clock.js";
 import { replay, ReplayError, type ReplayResult } from "./replayEngine.js";
 
-const BASE_URL = (process.env.BASE_URL ?? "http://localhost:3000").replace(/\/+$/, "");
+const CLUSTER_LB = "http://127.0.0.1:8080";
+const CLUSTER_NODES = ["http://127.0.0.1:3001", "http://127.0.0.1:3002", "http://127.0.0.1:3003"];
 
 const useColor = process.stdout.isTTY && !process.env.NO_COLOR;
 const paint = (code: number, s: string) => (useColor ? `\x1b[${code}m${s}\x1b[0m` : s);
@@ -41,8 +46,17 @@ function parse() {
       max: { type: "string", default: String(DEFAULT_DEFENSE.maxRequests) },
       window: { type: "string", default: String(DEFAULT_DEFENSE.windowMs) },
       keyBy: { type: "string", default: DEFAULT_DEFENSE.keyBy },
+      cluster: { type: "boolean", default: false },
+      nodes: { type: "string" },
     },
   });
+
+  const baseUrl = (process.env.BASE_URL ?? (values.cluster ? CLUSTER_LB : "http://localhost:3000")).replace(/\/+$/, "");
+  const nodeUrls = values.nodes
+    ? values.nodes.split(",").map((u) => u.trim().replace(/\/+$/, "")).filter(Boolean)
+    : values.cluster
+      ? CLUSTER_NODES
+      : [];
 
   const rounds = values.round === "all" ? SCENARIOS.map((s) => s.id) : [Number(values.round)];
   if (rounds.some((r) => !SCENARIOS.some((s) => s.id === r))) usage(`--round must be 1–${SCENARIOS.length} or "all"`);
@@ -58,7 +72,7 @@ function parse() {
     if (!result.ok) usage(`Invalid config: ${result.issues.map((i) => `${i.field} ${i.message}`).join(", ")}`);
     return result.config;
   });
-  return { rounds, configs };
+  return { rounds, configs, baseUrl, nodeUrls };
 }
 
 const describeConfig = (c: DefenseConfig) => `${c.algorithm} · ${c.maxRequests} per ${c.windowMs}ms · key by ${c.keyBy}`;
@@ -80,12 +94,21 @@ function print(r: ReplayResult) {
   const check = r.statsCheck.matches ? green("✓ matches") : red("✗ MISMATCH");
   console.log(`  server confirms (/api/stats): 200 × ${res.s200}, 429 × ${res.s429}, 401 × ${res.s401}  ${check}`);
   for (const m of r.statsCheck.mismatches) console.log(red(`    ${m}`));
+  const logins = r.records.filter((x) => x.path === "/api/login");
+  if (logins.length > 0) {
+    const n = (code: number) => logins.filter((x) => x.status === code).length;
+    console.log(`  login:  ${logins.length} attempts → ${n(401)} × 401 before lockout, ${n(429)} × 429`);
+  }
+  const split = Object.entries(r.nodeSplit).sort(([a], [b]) => a.localeCompare(b));
+  if (split.length > 1) console.log(`  served by: ${split.map(([id, n]) => `${id} ${n}`).join(", ")}`);
   const top = r.stats.topKeys.slice(0, 3).map((k) => `${k.key} (${k.allowed}/${k.requests})`);
   console.log(dim(`  limiter keys: ${r.stats.trackedKeys}${top.length ? ` · top: ${top.join(", ")}` : ""}`));
 }
 
 async function main(): Promise<number> {
-  const { rounds, configs } = parse();
+  const { rounds, configs, baseUrl: BASE_URL, nodeUrls } = parse();
+  const controlUrls = nodeUrls.length > 0 ? nodeUrls : [BASE_URL];
+  if (nodeUrls.length > 0) console.log(dim(`multi-node: traffic → ${BASE_URL}, deploy/stats → ${nodeUrls.join(", ")}`));
   try {
     const health = await fetch(`${BASE_URL}/api/health`);
     if (!health.ok) throw new Error(`HTTP ${health.status}`);
@@ -100,7 +123,7 @@ async function main(): Promise<number> {
     const results: ReplayResult[] = [];
     for (const config of configs) {
       console.log(dim(`\nreplaying round ${round} [${describeConfig(config)}] (~${Math.round(scenario.durationMs / 1000)}s)…`));
-      const r = await replay({ baseUrl: BASE_URL, scenario, config, clock: realClock(), leadMs: 100 });
+      const r = await replay({ baseUrl: BASE_URL, controlUrls, scenario, config, clock: realClock(), leadMs: 100 });
       print(r);
       ok &&= r.statsCheck.matches && r.tally.errors === 0;
       results.push(r);
@@ -114,11 +137,15 @@ async function main(): Promise<number> {
     }
   }
 
-  await fetch(`${BASE_URL}/api/defense`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(DEFAULT_DEFENSE),
-  });
+  await Promise.all(
+    controlUrls.map((url) =>
+      fetch(`${url}/api/defense`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(DEFAULT_DEFENSE),
+      }),
+    ),
+  );
   console.log(ok ? green("\nAll replays match the server's stats.") : red("\nSome replays failed. See above."));
   return ok ? 0 : 1;
 }
