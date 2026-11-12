@@ -14,7 +14,7 @@ import { createRedis } from "./redis/client.js";
 import { loadRound, MemoryRoundState, type RoundState } from "./state/round.js";
 import { RedisRoundState } from "./state/redisRound.js";
 import { RedisStats } from "./state/redisStats.js";
-import { memoryStoreFactory } from "./algorithms/memoryStore.js";
+import { RedisLimiterStore } from "./algorithms/redisStore.js";
 
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -36,11 +36,12 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   let roundState: RoundState;
   let statsBackend: StatsBackend;
   if (env.LIMITER_STORE === "redis") {
-    // Shared across nodes: config, generation and stats in Redis. Limiter counters are still per node until
-    // the Redis stores land (tasks2/04): each node keeps an in-memory store per generation.
+    // Shared across nodes: config, generation, limiter counters (atomic Lua scripts) and stats, all in Redis.
     const redis = createRedis(env.REDIS_URL);
-    const storeFactory = deps.limiterStoreFactory ?? memoryStoreFactory;
-    roundState = new RedisRoundState(redis, env.REDIS_PREFIX, now, (algorithm, options) => storeFactory(algorithm, options));
+    const injected = deps.limiterStoreFactory;
+    roundState = new RedisRoundState(redis, env.REDIS_PREFIX, now, (algorithm, options, generation) =>
+      injected ? injected(algorithm, options) : new RedisLimiterStore(redis, env.REDIS_PREFIX, algorithm, options, generation),
+    );
     statsBackend = new RedisStats(redis, env.REDIS_PREFIX);
     app.locals.redis = redis;
   } else {
