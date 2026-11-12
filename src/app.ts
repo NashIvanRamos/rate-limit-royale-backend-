@@ -4,7 +4,7 @@ import type { Env } from "./config/env.js";
 import { DEFAULT_DEFENSE, DefenseState } from "./config/defense.js";
 import type { LimiterStoreFactory } from "./algorithms/index.js";
 import { getClientKeyIp } from "./middleware/clientIp.js";
-import { LoginGuard } from "./auth/loginGuard.js";
+import { LoginGuard, RedisLoginGuard, type LoginGuardBackend } from "./auth/loginGuard.js";
 import { defenseRouter } from "./routes/defense.js";
 import { expiredTokenRouter, loginRouter } from "./routes/login.js";
 import { resourceRouter } from "./routes/resource.js";
@@ -30,11 +30,11 @@ export interface AppDeps {
 export function createApp(env: Env, deps: AppDeps = {}): Express {
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const loginGuard = new LoginGuard();
   const app = express();
 
   let roundState: RoundState;
   let statsBackend: StatsBackend;
+  let loginGuard: LoginGuardBackend;
   if (env.LIMITER_STORE === "redis") {
     // Shared across nodes: config, generation, limiter counters (atomic Lua scripts) and stats, all in Redis.
     const redis = createRedis(env.REDIS_URL);
@@ -43,21 +43,24 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       injected ? injected(algorithm, options) : new RedisLimiterStore(redis, env.REDIS_PREFIX, algorithm, options, generation),
     );
     statsBackend = new RedisStats(redis, env.REDIS_PREFIX);
+    loginGuard = new RedisLoginGuard(redis, env.REDIS_PREFIX);
     app.locals.redis = redis;
   } else {
+    const memoryGuard = new LoginGuard();
     const defense = new DefenseState(now(), DEFAULT_DEFENSE, deps.limiterStoreFactory);
     const stats = new StatsCollector(now());
-    defense.onReset(() => loginGuard.reset());
+    defense.onReset(() => memoryGuard.reset());
     defense.onReset(() => stats.reset(now()));
     roundState = new MemoryRoundState(defense);
     statsBackend = stats;
     app.locals.defense = defense;
     app.locals.stats = stats;
+    app.locals.loginGuard = memoryGuard;
+    loginGuard = memoryGuard;
   }
   // Exposed for tests. Not reachable over HTTP.
   app.locals.roundState = roundState;
   app.locals.statsBackend = statsBackend;
-  app.locals.loginGuard = loginGuard;
 
   app.disable("x-powered-by");
   app.set("trust proxy", env.TRUST_PROXY);
@@ -80,18 +83,6 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   // Load the round once per request (limiter, login guard and stats all use this snapshot), then count.
   // Both before express.json(), so a login with malformed JSON (400 from the body parser) is still counted.
   app.use(loadRound(roundState));
-  if (roundState.backend === "redis") {
-    // The login guard is still per node (until tasks2/05): clear it the first time this node sees a new deploy.
-    let seenGeneration = 0;
-    app.use((_req, res, next) => {
-      const gen = res.locals.round?.generation;
-      if (gen !== undefined && gen !== seenGeneration) {
-        if (seenGeneration !== 0) loginGuard.reset();
-        seenGeneration = gen;
-      }
-      next();
-    });
-  }
   app.use(statsBackend.middleware());
 
   app.use(express.json({ limit: "10kb" }));

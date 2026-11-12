@@ -15,6 +15,7 @@ declare global {
       // ── app.locals: exposed for tests, not reachable over HTTP ──
       roundState: RoundState;
       statsBackend: StatsBackend;
+      /** Memory mode only. */
       loginGuard: LoginGuard;
       /** Memory mode only (tests poke the in-process limiter through it). */
       defense: DefenseState;
