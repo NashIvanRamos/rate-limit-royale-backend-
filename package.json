@@ -11,7 +11,8 @@
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "smoke": "tsx scripts/smoke.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
-    "replay": "tsx scripts/replay.ts"
+    "replay": "tsx scripts/replay.ts",
+    "cluster": "tsx scripts/cluster.ts"
   },
   "keywords": [],
   "author": "",

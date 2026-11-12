@@ -1,0 +1,51 @@
+# Load balancer for the local cluster (tasks2/00). Rendered by scripts/cluster.ts into infra/nginx/run/<port>/,
+# then started with `nginx -p <run dir> -c nginx.conf -g "daemon off;"`. No sudo, nothing outside the repo.
+#
+# Placeholders (double curly braces): LISTEN, BALANCE, SERVERS. Each appears exactly once below.
+
+worker_processes 1;
+pid nginx.pid;
+error_log error.log warn;
+
+events {
+  worker_connections 1024;
+}
+
+http {
+  access_log off;
+
+  # Temp paths inside the run dir (the defaults live in Homebrew's prefix).
+  client_body_temp_path tmp/client_body;
+  proxy_temp_path tmp/proxy;
+  fastcgi_temp_path tmp/fastcgi;
+  uwsgi_temp_path tmp/uwsgi;
+  scgi_temp_path tmp/scgi;
+
+  upstream api {
+    # round-robin: (nothing) → NGINX's default.
+    # sticky: `hash $http_x_forwarded_for consistent;` Not ip_hash. ip_hash keys on the TCP peer (always 127.0.0.1
+    # here, so every simulated client would land on one node) and only uses the first 3 octets of an IPv4 address.
+    {{BALANCE}}
+{{SERVERS}}
+    keepalive 32;
+  }
+
+  server {
+    listen {{LISTEN}};
+
+    location / {
+      proxy_pass http://api;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_set_header Host $host;
+      # Append the peer (127.0.0.1) to the client's X-Forwarded-For, like a real proxy hop. The nodes trust
+      # loopback only, so they skip this hop and key on the simulated client IP the replay/browser sent.
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+      proxy_connect_timeout 2s;
+      proxy_read_timeout 10s;
+      # A dead node: try the next one (relevant to the sticky "node killed mid-round" experiment).
+      proxy_next_upstream error timeout;
+    }
+  }
+}
