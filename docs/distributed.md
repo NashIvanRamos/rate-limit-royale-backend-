@@ -17,6 +17,14 @@ the replay's tally exactly in every run. Legit blocks stayed at 0, so the leak o
 Also covered by `test/cluster.test.ts`: 30 requests from one IP at "5 per minute" → 15 allowed with round robin,
 5 with sticky routing.
 
-## After Redis
+## Redis step 1: shared config and stats, counters still per node (tasks2/03)
 
-Pending tasks2/03–05.
+`npm run cluster -- --store redis`:
+- One `POST /api/defense` through the load balancer: all 3 nodes report the same config and the same `deployedAt`
+  (one shared window epoch).
+- `/api/stats` from **any one** node equals the whole cluster's tally (the replay matched it exactly).
+- Round 5: still **33** through, as expected. The limiter counters themselves are per node until tasks2/04.
+
+## After Redis limiters
+
+Pending tasks2/04–05.

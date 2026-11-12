@@ -177,7 +177,13 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
   const clients = new Map(scenario.clients.map((c) => [c.id, c]));
 
   // 1. Deploy.
-  const controlUrls = opts.controlUrls?.length ? opts.controlUrls : [baseUrl];
+  let controlUrls = opts.controlUrls?.length ? opts.controlUrls : [baseUrl];
+  if (controlUrls.length > 1) {
+    // Shared (redis) state: one node is enough, and summing would count everything N times. Deploying through one
+    // node and reading stats from it is also the point: the others follow.
+    const health = await call(controlUrls[0]!, "/api/health", "127.0.0.1");
+    if (health.body?.store === "redis") controlUrls = [controlUrls[0]!];
+  }
   const sentAt = Date.now();
   const deploys = await Promise.all(controlUrls.map((url) => call(url, "/api/defense", "127.0.0.1", { body: config })));
   deploys.forEach((d, i) => {
@@ -247,6 +253,8 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     else if (r.status === 401) s.rejectedAuth++;
   }
 
+  // Stats writes happen on response `finish` (fire-and-forget in redis mode). Give in-flight ones a moment to land.
+  if (!opts.sequential) await new Promise((r) => setTimeout(r, 100));
   const snapshots = await Promise.all(
     controlUrls.map(async (url) => {
       const res = await call(url, "/api/stats", "127.0.0.1");

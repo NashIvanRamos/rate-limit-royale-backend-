@@ -41,6 +41,7 @@ export class DefenseState {
   private _config: DefenseConfig;
   private _store: LimiterStore;
   private _deployedAt: number;
+  private _generation = 1;
   private readonly resetListeners: ResetListener[] = [];
 
   /** `storeFactory` picks where limiter state lives: in memory (default) or, later, Redis (tasks2/04). */
@@ -67,6 +68,11 @@ export class DefenseState {
     return this._deployedAt;
   }
 
+  /** Bumped on every deploy (tasks2: mirrors the Redis generation). */
+  get generation(): number {
+    return this._generation;
+  }
+
   /** Other per-round state (login limiter, stats) registers here to be cleared on every deploy. */
   onReset(listener: ResetListener): void {
     this.resetListeners.push(listener);
@@ -77,6 +83,7 @@ export class DefenseState {
     this._config = { ...config };
     this._deployedAt = now;
     this._store = this.build(this._config, now);
+    this._generation++;
     for (const listener of this.resetListeners) listener();
     return this.snapshot();
   }

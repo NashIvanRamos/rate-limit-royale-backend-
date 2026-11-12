@@ -13,6 +13,11 @@ export interface Env {
   readonly CORS_ORIGIN: string;
   /** Identifies this process in a multi-node setup (tasks2). Echoed in X-Node-Id, /api/health and /api/stats. */
   readonly NODE_ID: string;
+  /** Where round state (defense config, limiter counters, stats) lives. "redis" shares it across nodes (tasks2). */
+  readonly LIMITER_STORE: "memory" | "redis";
+  readonly REDIS_URL: string;
+  /** Prefix for every Redis key, so several apps (or test suites) can share one Redis. */
+  readonly REDIS_PREFIX: string;
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -69,6 +74,13 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     problems.push(`NODE_ID must be 1–32 characters of letters, digits, ".", "_" or "-", got "${source.NODE_ID}"`);
   }
 
+  const store = (source.LIMITER_STORE?.trim() || "memory").toLowerCase();
+  if (store !== "memory" && store !== "redis") problems.push(`LIMITER_STORE must be "memory" or "redis", got "${source.LIMITER_STORE}"`);
+  const redisUrl = source.REDIS_URL?.trim() || "redis://127.0.0.1:6379";
+  if (!/^rediss?:\/\//.test(redisUrl)) problems.push(`REDIS_URL must start with redis:// or rediss://`);
+  const redisPrefix = source.REDIS_PREFIX ?? "rlr:";
+  if (!/^[A-Za-z0-9:_.-]{0,32}$/.test(redisPrefix)) problems.push(`REDIS_PREFIX must be up to 32 of [A-Za-z0-9:_.-]`);
+
   if (problems.length > 0) throw new EnvError(problems);
 
   return Object.freeze({
@@ -78,5 +90,8 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     DEMO_MODE: demoMode,
     CORS_ORIGIN: source.CORS_ORIGIN?.trim() || "http://localhost:5173",
     NODE_ID: nodeId,
+    LIMITER_STORE: store as "memory" | "redis",
+    REDIS_URL: redisUrl,
+    REDIS_PREFIX: redisPrefix,
   });
 }

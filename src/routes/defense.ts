@@ -6,22 +6,23 @@
  * Never rate limited.
  */
 import { Router } from "express";
-import { validateDefenseConfig, type DefenseState } from "../config/defense.js";
+import { validateDefenseConfig } from "../config/defense.js";
+import { snapshotOf, type RoundState } from "../state/round.js";
 
-export function defenseRouter(state: DefenseState, now: () => number): Router {
+export function defenseRouter(state: RoundState, now: () => number): Router {
   const router = Router();
 
-  router.get("/", (_req, res) => {
-    res.status(200).json(state.snapshot());
+  router.get("/", async (_req, res) => {
+    res.status(200).json(snapshotOf(await state.current()));
   });
 
-  router.post("/", (req, res) => {
+  router.post("/", async (req, res) => {
     const result = validateDefenseConfig(req.body);
     if (!result.ok) {
       res.status(400).json({ error: "invalid_config", details: result.issues });
       return;
     }
-    res.status(200).json(state.deploy(result.config, now()));
+    res.status(200).json(await state.deploy(result.config, now()));
   });
 
   return router;
