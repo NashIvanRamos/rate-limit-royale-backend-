@@ -31,6 +31,13 @@ export interface ReplayOptions {
    * would reach only one node. Defaults to [baseUrl].
    */
   controlUrls?: string[];
+  /**
+   * Skip control nodes that don't answer when reading stats, instead of failing (tasks2/07's "kill a node mid-round").
+   * Their counts are lost, so the stats check reports the unreachable nodes as mismatches.
+   */
+  tolerateDeadNodes?: boolean;
+  /** Called once firing starts (server time), e.g. to schedule a fault. */
+  onFireStart?: (startAt: number) => void;
 }
 
 export interface ClientSummary {
@@ -225,6 +232,7 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
   };
 
   const records: RequestRecord[] = [];
+  opts.onFireStart?.(startAt);
   if (opts.sequential) {
     for (const e of events) {
       await clock.waitUntil(startAt + e.at);
@@ -255,13 +263,23 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
 
   // Stats writes happen on response `finish` (fire-and-forget in redis mode). Give in-flight ones a moment to land.
   if (!opts.sequential) await new Promise((r) => setTimeout(r, 100));
-  const snapshots = await Promise.all(
-    controlUrls.map(async (url) => {
-      const res = await call(url, "/api/stats", "127.0.0.1");
-      if (res.status !== 200) throw new ReplayError(`GET ${url}/api/stats → HTTP ${res.status}`);
-      return res.body as StatsSnapshot;
-    }),
-  );
+  const dead: string[] = [];
+  const snapshots = (
+    await Promise.all(
+      controlUrls.map(async (url) => {
+        try {
+          const res = await call(url, "/api/stats", "127.0.0.1");
+          if (res.status !== 200) throw new ReplayError(`GET ${url}/api/stats → HTTP ${res.status}`);
+          return res.body as StatsSnapshot;
+        } catch (err) {
+          if (!opts.tolerateDeadNodes) throw err;
+          dead.push(url);
+          return null;
+        }
+      }),
+    )
+  ).filter((s): s is StatsSnapshot => s !== null);
+  if (snapshots.length === 0) throw new ReplayError("no control node answered GET /api/stats");
   const stats = sumStats(snapshots);
 
   const nodeSplit: Record<string, number> = {};
@@ -278,7 +296,11 @@ export async function replay(opts: ReplayOptions): Promise<ReplayResult> {
     byClient,
     setupLogins,
     stats,
-    statsCheck: compareWithStats(records, setupLogins, stats),
+    statsCheck: (() => {
+      const check = compareWithStats(records, setupLogins, stats);
+      if (dead.length === 0) return check;
+      return { matches: false, mismatches: [...dead.map((u) => `${u} unreachable: its counts were lost with it`), ...check.mismatches] };
+    })(),
     nodeSplit,
   };
 }
