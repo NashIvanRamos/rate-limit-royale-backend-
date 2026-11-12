@@ -49,7 +49,7 @@ export interface StatsSnapshot {
   since: number;
   resource: ResourceCounts;
   login: LoginCounts;
-  /** limiter.size() at read time: how many keys the active limiter is holding in memory. */
+  /** store.size() at read time: how many keys the active limiter store is holding. */
   trackedKeys: number;
   /** Top keys by requests that reached the limiter (200 or 429). 401s never reach it, so they have no key. */
   topKeys: KeyCounts[];

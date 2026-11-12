@@ -1,7 +1,8 @@
 import express, { type ErrorRequestHandler, type Express } from "express";
 import cors from "cors";
 import type { Env } from "./config/env.js";
-import { DefenseState } from "./config/defense.js";
+import { DEFAULT_DEFENSE, DefenseState } from "./config/defense.js";
+import type { LimiterStoreFactory } from "./algorithms/index.js";
 import { getClientKeyIp } from "./middleware/clientIp.js";
 import { LoginGuard } from "./auth/loginGuard.js";
 import { defenseRouter } from "./routes/defense.js";
@@ -13,6 +14,8 @@ import { StatsCollector } from "./middleware/stats.js";
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
   now?: () => number;
+  /** Where limiter state lives. Defaults to in-memory (tasks2/02). */
+  limiterStoreFactory?: LimiterStoreFactory;
 }
 
 /**
@@ -22,7 +25,7 @@ export interface AppDeps {
 export function createApp(env: Env, deps: AppDeps = {}): Express {
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const defense = new DefenseState(now());
+  const defense = new DefenseState(now(), DEFAULT_DEFENSE, deps.limiterStoreFactory);
   const loginGuard = new LoginGuard();
   const stats = new StatsCollector(now());
   defense.onReset(() => loginGuard.reset());

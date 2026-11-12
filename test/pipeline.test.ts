@@ -42,7 +42,7 @@ for (const algorithm of ALGORITHMS) {
     };
 
     const valid = (sub: string) => tokens.validToken(sub, clock.now());
-    const limiterSize = () => server.app.locals.defense.limiter.size();
+    const limiterSize = () => server.app.locals.defense.store.size();
 
     before(async () => {
       server = await startServer(testEnv(), { now: clock.now });
@@ -91,7 +91,7 @@ for (const algorithm of ALGORITHMS) {
             await deploy({ keyBy });
             const attack = await statuses(50, make());
             assert.ok(attack.every((s) => s === 401), `${keyBy}: ${attack}`);
-            assert.equal(limiterSize(), 0, `${keyBy}: limiter untouched`);
+            assert.equal(await limiterSize(), 0, `${keyBy}: limiter untouched`);
 
             assert.deepEqual(await statuses(MAX, valid("alice")), Array(MAX).fill(200), keyBy);
             assert.equal((await hit(valid("alice"))).status, 429, keyBy);
@@ -154,11 +154,11 @@ describe("/api/resource integration", () => {
       body: JSON.stringify({ username: "carol", password: demoPassword("carol") }),
     });
     const { token } = await r.json();
-    const before = server.app.locals.defense.limiter.size();
+    const before = await server.app.locals.defense.store.size();
     const res = await fetch(`${server.baseUrl}/api/resource`, { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(res.status, 401);
     assert.equal((await res.json()).reason, "expired");
-    assert.equal(server.app.locals.defense.limiter.size(), before);
+    assert.equal(await server.app.locals.defense.store.size(), before);
   });
 
   test("429 headers are readable cross-origin (exposed via CORS)", async () => {

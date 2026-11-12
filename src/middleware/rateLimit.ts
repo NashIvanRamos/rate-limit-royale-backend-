@@ -20,13 +20,14 @@ export function selectKey(req: Request, config: Pick<DefenseConfig, "keyBy">): s
 }
 
 export function rateLimit(state: DefenseState, now: () => number): RequestHandler {
-  return (req, res, next) => {
-    // Read config and limiter at request time, so a redeploy mid-round takes effect immediately.
-    const { config, limiter } = state;
+  // Async because the store may be remote (tasks2). Express 5 forwards a rejected promise to the error handler.
+  return async (req, res, next) => {
+    // Read config and store at request time, so a redeploy mid-round takes effect immediately.
+    const { config, store } = state;
     const key = selectKey(req, config);
     // Read by the stats middleware (task 07) for the per-key breakdown.
     res.locals.rateLimitKey = key;
-    const decision = limiter.allow(key, now());
+    const decision = await store.allow(key, now());
 
     res.setHeader("RateLimit-Limit", String(config.maxRequests));
     res.setHeader("RateLimit-Remaining", String(decision.remaining));
