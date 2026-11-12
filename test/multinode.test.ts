@@ -63,4 +63,27 @@ describe("replay with controlUrls", () => {
       await b.close();
     }
   });
+
+  test("tolerateDeadNodes: a node that dies mid-round is reported, not fatal", async () => {
+    const { clock, now } = fakeRunnerClock();
+    const a = await startServer(testEnv({ NODE_ID: "a" }), { now });
+    const b = await startServer(testEnv({ NODE_ID: "b" }), { now });
+    try {
+      const r = await replay({
+        baseUrl: a.baseUrl,
+        controlUrls: [a.baseUrl, b.baseUrl],
+        scenario: getScenario(1),
+        config: { algorithm: "fixed", maxRequests: 10, windowMs: 10_000, keyBy: "ip" },
+        clock,
+        sequential: true,
+        tolerateDeadNodes: true,
+        onFireStart: () => void b.close(),
+      });
+      assert.equal(r.statsCheck.matches, false);
+      assert.match(r.statsCheck.mismatches[0]!, /unreachable/);
+      assert.equal(r.statsCheck.mismatches.length, 1, "node a's own numbers still match");
+    } finally {
+      await a.close();
+    }
+  });
 });

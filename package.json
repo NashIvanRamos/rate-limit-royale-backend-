@@ -12,7 +12,8 @@
     "smoke": "tsx scripts/smoke.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "replay": "tsx scripts/replay.ts",
-    "cluster": "tsx scripts/cluster.ts"
+    "cluster": "tsx scripts/cluster.ts",
+    "experiment": "tsx scripts/experiment.ts"
   },
   "keywords": [],
   "author": "",
