@@ -1,16 +1,16 @@
 /**
  * GET /api/stats: the server's own tally for the current round (since the last deploy).
- * Never rate limited and never counted itself.
+ * Never rate limited and never counted itself. In redis mode any node returns the whole cluster's numbers.
  */
 import { Router } from "express";
-import type { DefenseState } from "../config/defense.js";
-import type { StatsCollector } from "../middleware/stats.js";
+import type { StatsBackend } from "../middleware/stats.js";
+import type { RoundState } from "../state/round.js";
 
-export function statsRouter(stats: StatsCollector, defense: DefenseState, nodeId: string): Router {
+export function statsRouter(stats: StatsBackend, round: RoundState, nodeId: string): Router {
   const router = Router();
   router.get("/", async (_req, res) => {
-    // Read the store at request time: a redeploy swaps it for a fresh one.
-    res.status(200).json({ nodeId, ...stats.snapshot(await defense.store.size()) });
+    // Read the round at request time: a redeploy swaps the store for a fresh one.
+    res.status(200).json({ nodeId, store: round.backend, ...(await stats.read(await round.current())) });
   });
   return router;
 }

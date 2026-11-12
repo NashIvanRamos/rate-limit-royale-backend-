@@ -14,6 +14,7 @@
  */
 import type { RequestHandler } from "express";
 import type { AuthFailureReason } from "../auth/jwt.js";
+import type { RoundView } from "../state/round.js";
 
 /** Per-key breakdown is bounded so a flood of distinct keys can't grow memory without limit. */
 export const MAX_TRACKED_KEYS = 10_000;
@@ -78,7 +79,15 @@ function endpointOf(path: string): Endpoint | null {
   return null;
 }
 
-export class StatsCollector {
+/** Where stats live: per process (StatsCollector) or shared in Redis (state/redisStats.ts). */
+export interface StatsBackend {
+  /** Counts each /api/resource and /api/login response on finish. */
+  middleware(): RequestHandler;
+  /** The current round's stats. */
+  read(view: RoundView): Promise<StatsSnapshot>;
+}
+
+export class StatsCollector implements StatsBackend {
   private since: number;
   private resource = emptyResource();
   private login = emptyLogin();
@@ -136,6 +145,10 @@ export class StatsCollector {
       topKeys,
       untrackedKeyRequests: this.untrackedKeyRequests,
     };
+  }
+
+  async read(view: RoundView): Promise<StatsSnapshot> {
+    return this.snapshot(await view.store.size());
   }
 
   /** Express middleware: counts each /api/resource and /api/login response when it finishes. */

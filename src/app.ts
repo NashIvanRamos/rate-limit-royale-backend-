@@ -9,7 +9,12 @@ import { defenseRouter } from "./routes/defense.js";
 import { expiredTokenRouter, loginRouter } from "./routes/login.js";
 import { resourceRouter } from "./routes/resource.js";
 import { statsRouter } from "./routes/stats.js";
-import { StatsCollector } from "./middleware/stats.js";
+import { StatsCollector, type StatsBackend } from "./middleware/stats.js";
+import { createRedis } from "./redis/client.js";
+import { loadRound, MemoryRoundState, type RoundState } from "./state/round.js";
+import { RedisRoundState } from "./state/redisRound.js";
+import { RedisStats } from "./state/redisStats.js";
+import { memoryStoreFactory } from "./algorithms/memoryStore.js";
 
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -25,17 +30,33 @@ export interface AppDeps {
 export function createApp(env: Env, deps: AppDeps = {}): Express {
   const now = deps.now ?? Date.now;
   const startedAt = now();
-  const defense = new DefenseState(now(), DEFAULT_DEFENSE, deps.limiterStoreFactory);
   const loginGuard = new LoginGuard();
-  const stats = new StatsCollector(now());
-  defense.onReset(() => loginGuard.reset());
-  defense.onReset(() => stats.reset(now()));
-
   const app = express();
-  // Exposed for tests and later middleware. Not reachable over HTTP.
-  app.locals.defense = defense;
+
+  let roundState: RoundState;
+  let statsBackend: StatsBackend;
+  if (env.LIMITER_STORE === "redis") {
+    // Shared across nodes: config, generation and stats in Redis. Limiter counters are still per node until
+    // the Redis stores land (tasks2/04): each node keeps an in-memory store per generation.
+    const redis = createRedis(env.REDIS_URL);
+    const storeFactory = deps.limiterStoreFactory ?? memoryStoreFactory;
+    roundState = new RedisRoundState(redis, env.REDIS_PREFIX, now, (algorithm, options) => storeFactory(algorithm, options));
+    statsBackend = new RedisStats(redis, env.REDIS_PREFIX);
+    app.locals.redis = redis;
+  } else {
+    const defense = new DefenseState(now(), DEFAULT_DEFENSE, deps.limiterStoreFactory);
+    const stats = new StatsCollector(now());
+    defense.onReset(() => loginGuard.reset());
+    defense.onReset(() => stats.reset(now()));
+    roundState = new MemoryRoundState(defense);
+    statsBackend = stats;
+    app.locals.defense = defense;
+    app.locals.stats = stats;
+  }
+  // Exposed for tests. Not reachable over HTTP.
+  app.locals.roundState = roundState;
+  app.locals.statsBackend = statsBackend;
   app.locals.loginGuard = loginGuard;
-  app.locals.stats = stats;
 
   app.disable("x-powered-by");
   app.set("trust proxy", env.TRUST_PROXY);
@@ -55,24 +76,40 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     next();
   });
 
-  // Before express.json(), so a login with malformed JSON (400 from the body parser) is still counted.
-  app.use(stats.middleware());
+  // Load the round once per request (limiter, login guard and stats all use this snapshot), then count.
+  // Both before express.json(), so a login with malformed JSON (400 from the body parser) is still counted.
+  app.use(loadRound(roundState));
+  if (roundState.backend === "redis") {
+    // The login guard is still per node (until tasks2/05): clear it the first time this node sees a new deploy.
+    let seenGeneration = 0;
+    app.use((_req, res, next) => {
+      const gen = res.locals.round?.generation;
+      if (gen !== undefined && gen !== seenGeneration) {
+        if (seenGeneration !== 0) loginGuard.reset();
+        seenGeneration = gen;
+      }
+      next();
+    });
+  }
+  app.use(statsBackend.middleware());
 
   app.use(express.json({ limit: "10kb" }));
 
   // 1. Unlimited routes.
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (_req, res) => {
+    const { config } = await roundState.current();
     res.status(200).json({
       status: "healthy",
       service: "Rate Limit Royale API",
       nodeId: env.NODE_ID,
       uptimeS: Math.floor((now() - startedAt) / 1000),
-      algorithm: defense.config.algorithm,
-      keyBy: defense.config.keyBy,
+      store: roundState.backend,
+      algorithm: config.algorithm,
+      keyBy: config.keyBy,
     });
   });
-  app.use("/api/defense", defenseRouter(defense, now));
-  app.use("/api/stats", statsRouter(stats, defense, env.NODE_ID));
+  app.use("/api/defense", defenseRouter(roundState, now));
+  app.use("/api/stats", statsRouter(statsBackend, roundState, env.NODE_ID));
 
   // 2. Login: its own IP-keyed failure limiter, independent of the configured defense.
   const loginDeps = { secret: env.JWT_SECRET, guard: loginGuard, now };
@@ -89,7 +126,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   }
 
   // 4. Protected resource: authenticate → key selection → limiter → handler.
-  app.use("/api/resource", resourceRouter({ secret: env.JWT_SECRET, defense, now }));
+  app.use("/api/resource", resourceRouter({ secret: env.JWT_SECRET, now }));
 
   // 5. Fallbacks: JSON 404 and error handler (no stack traces in responses).
   app.use((_req, res) => {

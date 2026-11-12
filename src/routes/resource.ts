@@ -7,13 +7,12 @@
  *   3. handler:      200
  */
 import { Router } from "express";
-import type { DefenseState } from "../config/defense.js";
 import { authenticate } from "../middleware/authenticate.js";
 import { rateLimit } from "../middleware/rateLimit.js";
 
-export function resourceRouter({ secret, defense, now }: { secret: string; defense: DefenseState; now: () => number }): Router {
+export function resourceRouter({ secret, now }: { secret: string; now: () => number }): Router {
   const router = Router();
-  router.get("/", authenticate({ secret, now }), rateLimit(defense, now), (req, res) => {
+  router.get("/", authenticate({ secret, now }), rateLimit(now), (req, res) => {
     res.status(200).json({ ok: true, sub: req.auth!.sub, servedAt: now() });
   });
   return router;

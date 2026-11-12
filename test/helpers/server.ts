@@ -26,7 +26,10 @@ export async function startServer(env: Env = testEnv(), deps: AppDeps = {}): Pro
   return {
     app,
     baseUrl: `http://127.0.0.1:${port}`,
-    close: () => new Promise((resolve, reject) => server.close((e) => (e ? reject(e) : resolve()))),
+    close: async () => {
+      await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
+      await app.locals.redis?.quit();
+    },
   };
 }
 

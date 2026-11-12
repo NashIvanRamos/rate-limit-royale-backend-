@@ -10,7 +10,7 @@
  * Prefixes keep a username from colliding with an IP string.
  */
 import type { Request, RequestHandler } from "express";
-import type { DefenseConfig, DefenseState } from "../config/defense.js";
+import type { DefenseConfig } from "../config/defense.js";
 import { setRetryAfter } from "../http/retryAfter.js";
 import { getClientKeyIp } from "./clientIp.js";
 
@@ -19,11 +19,11 @@ export function selectKey(req: Request, config: Pick<DefenseConfig, "keyBy">): s
   return `ip:${getClientKeyIp(req)}`;
 }
 
-export function rateLimit(state: DefenseState, now: () => number): RequestHandler {
+export function rateLimit(now: () => number): RequestHandler {
   // Async because the store may be remote (tasks2). Express 5 forwards a rejected promise to the error handler.
   return async (req, res, next) => {
-    // Read config and store at request time, so a redeploy mid-round takes effect immediately.
-    const { config, store } = state;
+    // The round loaded for this request (loadRound), so a redeploy takes effect on the next request.
+    const { config, store } = res.locals.round!;
     const key = selectKey(req, config);
     // Read by the stats middleware (task 07) for the per-key breakdown.
     res.locals.rateLimitKey = key;
