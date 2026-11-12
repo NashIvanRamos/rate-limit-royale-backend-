@@ -1,7 +1,7 @@
 import { test, describe, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { EnvError, loadEnv } from "../src/config/env.js";
-import { startServer, TEST_SECRET, type TestServer } from "./helpers/server.js";
+import { startServer, TEST_SECRET, testEnv, type TestServer } from "./helpers/server.js";
 
 describe("loadEnv", () => {
   test("throws when JWT_SECRET is missing", () => {
@@ -79,5 +79,24 @@ describe("app", () => {
   test("does not advertise Express", async () => {
     const res = await fetch(`${server.baseUrl}/api/health`);
     assert.equal(res.headers.get("x-powered-by"), null);
+  });
+});
+
+describe("NODE_ID (tasks2)", () => {
+  test("defaults to 'single' and is echoed in X-Node-Id and /api/health", async () => {
+    const env = loadEnv({ JWT_SECRET: TEST_SECRET });
+    assert.equal(env.NODE_ID, "single");
+    const server = await startServer(testEnv({ NODE_ID: "node-7" }));
+    try {
+      const res = await fetch(`${server.baseUrl}/api/health`);
+      assert.equal(res.headers.get("x-node-id"), "node-7");
+      assert.equal((await res.json()).nodeId, "node-7");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("rejects unsafe values", () => {
+    assert.throws(() => loadEnv({ JWT_SECRET: TEST_SECRET, NODE_ID: "node 1; rm" }), /NODE_ID/);
   });
 });

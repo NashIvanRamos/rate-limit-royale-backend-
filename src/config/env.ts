@@ -11,6 +11,8 @@ export interface Env {
   readonly TRUST_PROXY: TrustProxySetting;
   readonly DEMO_MODE: boolean;
   readonly CORS_ORIGIN: string;
+  /** Identifies this process in a multi-node setup (tasks2). Echoed in X-Node-Id, /api/health and /api/stats. */
+  readonly NODE_ID: string;
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -62,6 +64,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
 
   const demoMode = parseBoolean(source.DEMO_MODE, false, "DEMO_MODE", problems);
 
+  const nodeId = source.NODE_ID?.trim() || "single";
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(nodeId)) {
+    problems.push(`NODE_ID must be 1–32 characters of letters, digits, ".", "_" or "-", got "${source.NODE_ID}"`);
+  }
+
   if (problems.length > 0) throw new EnvError(problems);
 
   return Object.freeze({
@@ -70,5 +77,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     TRUST_PROXY: parseTrustProxy(source.TRUST_PROXY),
     DEMO_MODE: demoMode,
     CORS_ORIGIN: source.CORS_ORIGIN?.trim() || "http://localhost:5173",
+    NODE_ID: nodeId,
   });
 }

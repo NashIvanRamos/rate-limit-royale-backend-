@@ -42,9 +42,15 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       origin: env.CORS_ORIGIN,
       allowedHeaders: ["Content-Type", "Authorization", "X-Forwarded-For"],
       // Without this the browser can't read these headers on cross-origin responses.
-      exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining"],
+      exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "X-Node-Id"],
     }),
   );
+
+  // Which node answered. Lets the replay show how a load balancer spread the traffic (tasks2).
+  app.use((_req, res, next) => {
+    res.setHeader("X-Node-Id", env.NODE_ID);
+    next();
+  });
 
   // Before express.json(), so a login with malformed JSON (400 from the body parser) is still counted.
   app.use(stats.middleware());
@@ -56,13 +62,14 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     res.status(200).json({
       status: "healthy",
       service: "Rate Limit Royale API",
+      nodeId: env.NODE_ID,
       uptimeS: Math.floor((now() - startedAt) / 1000),
       algorithm: defense.config.algorithm,
       keyBy: defense.config.keyBy,
     });
   });
   app.use("/api/defense", defenseRouter(defense, now));
-  app.use("/api/stats", statsRouter(stats, defense));
+  app.use("/api/stats", statsRouter(stats, defense, env.NODE_ID));
 
   // 2. Login: its own IP-keyed failure limiter, independent of the configured defense.
   const loginDeps = { secret: env.JWT_SECRET, guard: loginGuard, now };
