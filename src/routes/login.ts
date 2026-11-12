@@ -10,7 +10,7 @@
  */
 import { Router, type Request, type Response } from "express";
 import { ACCESS_TOKEN_TTL_S, signAccessToken, signExpiredToken } from "../auth/jwt.js";
-import type { LoginGuard } from "../auth/loginGuard.js";
+import type { LoginGuardBackend } from "../auth/loginGuard.js";
 import { verifyCredentials } from "../config/users.js";
 import { setRetryAfter } from "../http/retryAfter.js";
 import { getClientKeyIp } from "../middleware/clientIp.js";
@@ -34,18 +34,19 @@ function parseCredentials(body: unknown): Credentials | null {
 
 interface LoginDeps {
   secret: string;
-  guard: LoginGuard;
+  guard: LoginGuardBackend;
   now: () => number;
 }
 
 type Issue = (secret: string, sub: string, nowMs: number) => string;
 
 function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (sub: string) => object) {
-  return (req: Request, res: Response) => {
+  return async (req: Request, res: Response) => {
     const t = now();
     const ip = getClientKeyIp(req);
+    const generation = res.locals.round!.generation;
 
-    const gate = guard.check(ip, t);
+    const gate = await guard.check(ip, t, generation);
     if (!gate.allowed) {
       setRetryAfter(res, gate.retryAfterMs);
       res.status(429).json({ error: "rate_limited", retryAfterMs: gate.retryAfterMs });
@@ -59,7 +60,8 @@ function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (s
     }
 
     if (!verifyCredentials(creds.username, creds.password)) {
-      guard.recordFailure(ip, t);
+      // Awaited, so the lockout is in place before the attacker sees this response and tries again.
+      await guard.recordFailure(ip, t, generation);
       res.status(401).json({ error: "invalid_credentials" });
       return;
     }

@@ -33,9 +33,10 @@ Also covered by `test/cluster.test.ts`: 30 requests from one IP at "5 per minute
 |---|---|---|---|
 | Round 5: attacker requests through | 13 | 33 | **13** |
 | Round 1: attacker requests through | 12 | 32 | **12** |
-| Round 4: failed logins before lockout | 5 | 15 | 15 (login guard still per node; tasks2/05) |
+| Round 4: failed logins before lockout | 5 | 15 | **5** (after tasks2/05) |
 
-Back to exactly the single-node numbers. Traffic was still split evenly over the 3 nodes, and `/api/stats` matched.
+Back to exactly the single-node numbers. The login row was 15 until tasks2/05 moved the lockout to Redis
+(sliding-log script in peek mode for the check). Measured after: 60 stuffing attempts → 5 × 401, then 55 × 429. Traffic was still split evenly over the 3 nodes, and `/api/stats` matched.
 
 Proof that atomicity matters (`test/redisLimiters.test.ts`):
 - 50 concurrent requests at a limit of 10 → **exactly 10** allowed by each Lua limiter.

@@ -126,4 +126,18 @@ describe("cluster: round-robin + redis", { skip: hasNginx && hasRedis ? false : 
     assert.equal(served.size, 3, "traffic really was spread over 3 nodes");
     assert.equal(allowed, 5);
   });
+
+  test("login lockout is cluster-wide: 5 failures, then 429 (15 without Redis)", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < 9; i++) {
+      const res = await fetch(`${cluster.lbUrl}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.6.6.99" },
+        body: JSON.stringify({ username: "user02", password: "wrong" }),
+      });
+      await res.body?.cancel();
+      statuses.push(res.status);
+    }
+    assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429, 429, 429, 429]);
+  });
 });
