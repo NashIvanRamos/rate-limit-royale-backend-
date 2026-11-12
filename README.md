@@ -4,7 +4,8 @@ The Express API behind **Rate Limit Royale**, a five-round game where the player
 (algorithm, limit, window, key by IP or user), deploys it to this server, and watches real attack traffic hit it.
 Every number the game shows comes from real HTTP responses: **200** accepted, **429** blocked, **401** rejected auth.
 
-TypeScript, Express 5, `jsonwebtoken`, all state in memory. 223 tests, no test dependencies beyond `node:test`.
+TypeScript, Express 5, `jsonwebtoken`. State lives in memory by default, or in **Redis** to run several nodes behind
+**NGINX** (see [Scaling out](#scaling-out-3-nodes-behind-nginx)). 267 tests, no test dependencies beyond `node:test`.
 
 - [Run it](#run-it)
 - [API reference](#api-reference)
@@ -14,6 +15,7 @@ TypeScript, Express 5, `jsonwebtoken`, all state in memory. 223 tests, no test d
 - [JWT](#jwt)
 - [Login limiting](#login-limiting)
 - [Measured results](#measured-results)
+- [Scaling out: 3 nodes behind NGINX](#scaling-out-3-nodes-behind-nginx)
 - [Honest limits](#honest-limits) and [what I'd change for production](#what-id-change-for-production)
 
 ---
@@ -37,6 +39,9 @@ npm run dev                  # http://localhost:3000
 | `npm run smoke` | Day 1 checks against the running server, real clock. PASS/FAIL table, exits 1 on failure (~9s). |
 | `npm run replay -- --round 5 --keyBy both` | Replays a game round against the running server like the browser does, and cross-checks against `/api/stats`. |
 | `npm run build && npm start` | Compile to `dist/` and run. |
+| `npm run cluster [-- --lb sticky --store redis]` | NGINX on `:8080` in front of 3 nodes (`:3001–3003`), optionally with Redis. See [Scaling out](#scaling-out-3-nodes-behind-nginx). |
+| `npm run replay -- --cluster --round 5` | Replay through the cluster's load balancer. |
+| `npm run experiment [-- --write]` | The whole load-balancing × store matrix, measured (~2 min). |
 
 `smoke` and `replay` redeploy the defense while they run (resetting limiter state) and leave the server on the default
 defense. Don't run them in the middle of a game round. `BASE_URL` points them at another server.
@@ -50,6 +55,11 @@ defense. Don't run them in the middle of a game round. `BASE_URL` points them at
 | `TRUST_PROXY` | `loopback` | Express `trust proxy`. See [simulated IPs](#keying-strategy). `false` = real socket IP only. |
 | `DEMO_MODE` | `false` | `true` enables `/api/demo/*` (round 4's expired token). `.env.example` sets it to `true`. |
 | `CORS_ORIGIN` | `http://localhost:5173` | The Vite dev server. |
+| `NODE_ID` | `single` | Names this process in a cluster. Echoed in `X-Node-Id`, `/api/health` and `/api/stats`. |
+| `LIMITER_STORE` | `memory` | `redis` shares the defense, limiter counters, login lockouts and stats across nodes. |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Used when `LIMITER_STORE=redis`. |
+| `REDIS_PREFIX` | `rlr:` | Prefix for every Redis key. |
+| `REDIS_FAILURE_MODE` | `open` | What `/api/resource` does if Redis is unreachable. See [failure modes](#when-redis-is-down). |
 
 Config is validated once at boot (`src/config/env.ts`). Invalid config lists every problem and exits.
 
@@ -58,6 +68,8 @@ Config is validated once at boot (`src/config/env.ts`). Invalid config lists eve
 ## API reference
 
 Every error has the shape `{ error: string, reason?: string, retryAfterMs?: number }`. No stack traces in responses.
+Every response carries `X-Node-Id`. In Redis mode, an unreachable Redis gives `503 store_unavailable` /
+`limiter_unavailable` or an `X-RateLimit-Degraded: true` header ([details](#when-redis-is-down)).
 
 | Method | Path | Auth | Limited by | Purpose |
 |---|---|---|---|---|
@@ -122,7 +134,8 @@ again at exactly `now + retryAfterMs` (tested for all three algorithms).
   "resource": { "total": 13, "s200": 5, "s401": 5, "s429": 3, "other": 0,
                 "byReason": { "missing_token": 1, "invalid_signature": 2, "expired": 1, "malformed": 1 } },
   "login":    { "total": 9, "s200": 1, "s400": 2, "s401": 5, "s429": 1, "other": 0 },
-  "trackedKeys": 3,                           // limiter.size(): keys held in memory right now
+  "nodeId": "node-2", "store": "redis",       // which node answered; in redis mode any node returns the cluster total
+  "trackedKeys": 3,                           // keys the limiter is tracking this round
   "topKeys": [{ "key": "ip:10.6.6.6", "requests": 300, "allowed": 13, "blocked": 287 }],
   "untrackedKeyRequests": 0
 }
@@ -322,39 +335,115 @@ is one quota plus the configured rate for the attack's duration, so a token buck
 
 ---
 
+## Scaling out: 3 nodes behind NGINX
+
+The default is a single process with in-memory state. That's simple and fast, but it only works on **one** node. I
+predicted it would break behind a load balancer, measured it, fixed it with Redis, and measured again.
+
+```
+replay / browser ──► NGINX :8080 ──┬──► node-1 :3001 ─┐
+ (X-Forwarded-For =                ├──► node-2 :3002 ─┼──► Redis :6379   (LIMITER_STORE=redis)
+  simulated client IP)             └──► node-3 :3003 ─┘
+```
+
+```bash
+brew install nginx redis                              # one time; no sudo or Docker needed after that
+npm run cluster -- --lb round-robin --store memory    # or --lb sticky, --store redis
+npm run replay -- --cluster --round 5                 # in another terminal
+npm run experiment                                    # every combination, measured (~2 min)
+```
+
+NGINX runs from `infra/nginx/nginx.conf.template` on loopback, so the nodes keep `trust proxy = loopback`, and the
+simulated client IPs survive the hop.
+
+### The measured matrix
+
+Defense: fixed window, 10 per 10s, key by IP. On a single node the attacker gets **13** through in round 5, **12** in
+round 1, and the login lockout starts after **5** failures. From `npm run experiment` (`docs/experiment-results.md`):
+
+| Load balancing | Store | Round 5 through | Round 1 through | Login failures before lockout |
+|---|---|---|---|---|
+| round robin | memory | **33** | **32** | **15** |
+| round robin | redis | 13 | 12 | 5 |
+| sticky (hash on client IP) | memory | 13 | 12 | 5 |
+| sticky | redis | 13 | 12 | 5 |
+| sticky, **attacker's node killed mid-round** | memory | **23** | | |
+| sticky, attacker's node killed mid-round | redis | 13 | | |
+
+- **Round robin + memory:** each node has its own counters, so the attacker gets about 3× the limit, and 3× the
+  password guesses.
+- **Redis:** one shared budget. The numbers go back to exactly the single-node ones.
+- **Sticky routing *looks* like it fixes it without Redis**, because each IP always lands on the same node. But kill
+  that node and NGINX moves the attacker to a node with a fresh budget (13 → 23). It also piles a whole NAT'd office
+  onto one node, and with key-by-user, a user who changes IP gets a new node and a new budget. **Sticky routing hides
+  the shared-state problem; it doesn't solve it.**
+
+### How the Redis store works
+
+- **Every decision is one Lua script** (`src/redis/scripts.ts`). A limiter is read → decide → write. As separate
+  commands, two nodes can both read "9 of 10 used", both allow, and let 11 through. A script runs atomically.
+  Measured in `test/redisLimiters.test.ts`: 50 concurrent requests at a limit of 10 → exactly **10** allowed. The same
+  thing as a naive `GET` then `INCR` → **50 of 50** allowed.
+- **Same semantics as in memory.** A differential test sends 600 random requests through the in-memory limiter
+  and the Redis store and requires identical decisions (allowed, retryAfterMs, remaining) for all three algorithms.
+- **Deploy = new generation.** `POST /api/defense` on any node bumps a generation counter. Every limiter, lockout and
+  stats key is namespaced by it, so a deploy resets everything without deleting anything. Old keys expire through
+  TTLs (with a 60s margin, so a key never expires before its window does).
+- **The defense config is shared**, read once per request (`loadRound`), so all nodes use the same config and the
+  same fixed-window epoch.
+- **Stats are shared too.** `/api/stats` on any node returns the whole cluster's tally.
+- **Time comes from the app** (`now` is passed to the scripts), so the fake-clock test suites run unchanged
+  against Redis. With nodes on different machines, clock skew would matter, and I'd call Redis `TIME` inside the
+  scripts instead.
+
+### When Redis is down
+
+| | `REDIS_FAILURE_MODE=open` (default) | `closed` |
+|---|---|---|
+| `/api/resource` | 200 + `X-RateLimit-Degraded: true` | 503 `limiter_unavailable` + `Retry-After: 1` |
+| `/api/login` | **503, always** | 503 |
+| `/api/health` | 200, `status: degraded`, `redis: down` | same |
+
+Commands time out after 150 ms, so a dead Redis costs each request about that, and doesn't pile requests up. When
+Redis comes back, the nodes recover without restarting (`test/redisFailure.test.ts`). **Why open by default:** for a
+read API, briefly losing the rate limit is better than taking the API down for every user. **Why login is the
+exception:** without lockout state, password guessing is unlimited, so login always fails closed.
+
+---
+
 ## Honest limits
 
-This is a single-process demo. Here's what it deliberately doesn't do:
+What this project deliberately doesn't do:
 
-- **In-memory state.** Limiter counters, login lockouts and stats live in the process. Run two instances behind a
-  load balancer and each client gets 2× the limit, and a restart forgets everything. Multi-instance needs a shared
-  store. See below.
+- **Single-node by default.** In-memory state only works on one node (measured above). `LIMITER_STORE=redis` fixes
+  that. The Redis setup is a single local instance with no replication or persistence: a demo of the design, not a
+  production Redis deployment.
 - **Simulated IPs** come from `X-Forwarded-For`, trusted from loopback only. That's correct for the local demo, but
   in production you'd trust only your real proxy.
 - **`/api/defense` and `/api/stats` are unauthenticated.** They're the game's control panel. In production these
   would be admin-only, on a separate port or network.
 - **Plaintext demo passwords** (`pass-<username>`) in a hard-coded list. Real users would be in a database with
   bcrypt/argon2 password hashes.
-- **No stale-key sweeping.** Fixed-window and token-bucket keys stay in memory until the next deploy, and sliding-log
-  keys are dropped only when the key is accessed again. A long-running server facing many distinct keys would need a
-  periodic sweep, or TTLs in Redis. `trackedKeys` in `/api/stats` makes this visible.
+- **No stale-key sweeping in memory mode.** Fixed-window and token-bucket keys stay in memory until the next deploy,
+  and sliding-log keys are dropped only when the key is accessed again. Redis mode solves this with TTLs.
+  `trackedKeys` in `/api/stats` makes it visible.
 - **Legitimacy labels live client-side.** The server can't tell legitimate traffic from attack traffic (if it could,
   rate limiting would be unnecessary), so "legitimate blocks" is computed by the game from its scenario script.
 - **No refresh tokens or revocation** (see [JWT](#jwt)).
 
 ### What I'd change for production
 
-- **Redis for limiter state.** Fixed window → `INCR` + `EXPIRE`. Sliding log → a sorted set (`ZADD`,
-  `ZREMRANGEBYSCORE`, `ZCARD`). Token bucket → a small **Lua script**, so the read-refill-decrement runs atomically
-  and concurrent requests can't race. The `RateLimiter` interface stays the same; only the storage changes. Costs
-  to weigh: one network round-trip per request (~1 ms), and a decision about **fail-open vs. fail-closed** when Redis
-  is down. Fail open keeps the API available; fail closed keeps the protection.
-- **A reverse proxy (NGINX or a cloud load balancer) in front.** It terminates TLS, sets `X-Forwarded-For` from the
-  real connection (with `trust proxy` set to the proxy's address only), and applies a coarse `limit_req` per IP,
-  so cheap floods (including garbage-token floods) are dropped before they reach Node. The app keeps the smarter
-  limits that need a verified identity.
+The Redis store, the NGINX cluster and the fail-open/closed choice are built and measured (above). What's left:
+
+- **Managed Redis with replicas**, and Redis `TIME` inside the scripts instead of each node's clock.
+- **A circuit breaker** in front of Redis: after a few failures, skip it for a few seconds, so degraded requests don't
+  each wait 150 ms, and a struggling Redis gets room to recover.
+- **Cache the defense config** with pub/sub invalidation instead of reading it on every request. Faster, at the cost
+  of a short window where nodes disagree after a deploy.
+- **The edge proxy does more:** TLS termination, `trust proxy` set to the proxy's real address, and a coarse
+  `limit_req` per IP, so cheap floods (including garbage-token floods) never reach Node.
 - **Layered keys:** per-user limits plus a looser per-IP/subnet limit, plus friction on account creation.
-- **Observability:** emit allow/deny counters per key type and algorithm to metrics, not just an in-memory `/api/stats`.
+- **Observability:** emit allow/deny counters per key type and algorithm to metrics, not just `/api/stats`.
 
 ---
 
@@ -364,15 +453,18 @@ This is a single-process demo. Here's what it deliberately doesn't do:
 src/
 ├── server.ts, app.ts           entry; app builder (routes mounted in pipeline order)
 ├── config/                     env validation, defense state + validation, demo users
-├── algorithms/                 fixedWindow, slidingWindowLog, tokenBucket behind one RateLimiter interface
+├── algorithms/                 fixedWindow, slidingWindowLog, tokenBucket; MemoryStore / RedisLimiterStore (LimiterStore)
 ├── auth/                       JWT sign/verify + reason mapping, login failure limiter
 ├── middleware/                 authenticate, rateLimit (key selection), clientIp, stats
 ├── routes/                     defense, login (+ demo expired-token), resource, stats
+├── redis/                      client + Lua scripts (defense, fixed, sliding, token)
+├── state/                      round state (memory / redis), loadRound, redis stats, failure mode
 ├── scenarios/                  the five rounds, tally and reference scoring (shared shape with the frontend)
 └── project_overview.md         the design doc
-scripts/                        smoke (Day 1 checks), replay (rounds against a live server)
+scripts/                        smoke (Day 1 checks), replay (rounds), cluster (NGINX + nodes + Redis), experiment
+infra/nginx/                    load balancer config template (round robin / sticky)
 test/                           node:test suites; integration tests run the real app on port 0 with a fake clock
-docs/curl.md                    Day 1 checks as copy-paste curl
-tasks/                          the backend task breakdown this was built from
+docs/                           curl.md (Day 1 checks as curl), distributed.md + experiment-results.md (measured)
+tasks/, tasks2/                 the task breakdowns this was built from (tasks2 = distributed mode)
 Frontend-Steps.md               the frontend's integration guide for this API
 ```

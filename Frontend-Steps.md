@@ -436,3 +436,21 @@ client/
 
 ## 12. Cut list (if time runs out, in order)
 Lives system (not planned) → final summary screen → edge-exploit round. **Never cut auth (round 4) or round 5.**
+
+---
+
+## Appendix: distributed mode (backend tasks2), what changes for the frontend
+
+Nothing, by default: `npm run dev` on `:3000` behaves exactly as before. Only if you want to demo the cluster:
+
+- **Point the Vite proxy at the load balancer:** `target: "http://localhost:8080"` while `npm run cluster` is running
+  (keep `xfwd: true`; simulated IPs survive the NGINX hop).
+- **New response header:** `X-Node-Id` (exposed via CORS) says which node served each request. Optional: show a
+  per-node split in the results card for the "3 nodes" story.
+- **`/api/health`** now includes `nodeId`, `store` (`memory` | `redis`), and in Redis mode `redis` (`up` | `down`)
+  and `failureMode`. `status` is `degraded` when Redis is down (still HTTP 200), which is good for the status pill.
+- **`/api/stats`** adds `nodeId` and `store`. In Redis mode any node returns the whole cluster's numbers. In memory
+  mode behind the cluster, each node only knows its own, so prefer `npm run cluster -- --store redis` for the game.
+- **Possible new statuses** (Redis mode only, if Redis dies): `/api/resource` → 200 with `X-RateLimit-Degraded: true`
+  (or 503 `limiter_unavailable` with `REDIS_FAILURE_MODE=closed`); `/api/login`, `/api/defense`, `/api/stats` → 503.
+  Treat 503 like a network error: tally it separately, never as accepted or blocked.
