@@ -88,16 +88,24 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   app.use(express.json({ limit: "10kb" }));
 
   // 1. Unlimited routes.
+  // Always 200 while the process is up; reports a store outage instead of failing (tasks2/06).
   app.get("/api/health", async (_req, res) => {
-    const { config } = await roundState.current();
+    let config: { algorithm: string; keyBy: string } | null = null;
+    try {
+      config = (await roundState.current()).config;
+    } catch {
+      config = null;
+    }
+    const storeUp = config !== null;
     res.status(200).json({
-      status: "healthy",
+      status: storeUp ? "healthy" : "degraded",
       service: "Rate Limit Royale API",
       nodeId: env.NODE_ID,
       uptimeS: Math.floor((now() - startedAt) / 1000),
       store: roundState.backend,
-      algorithm: config.algorithm,
-      keyBy: config.keyBy,
+      ...(roundState.backend === "redis" ? { redis: storeUp ? "up" : "down", failureMode: env.REDIS_FAILURE_MODE } : {}),
+      algorithm: config?.algorithm ?? null,
+      keyBy: config?.keyBy ?? null,
     });
   });
   app.use("/api/defense", defenseRouter(roundState, now));
@@ -118,7 +126,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   }
 
   // 4. Protected resource: authenticate → key selection → limiter → handler.
-  app.use("/api/resource", resourceRouter({ secret: env.JWT_SECRET, now }));
+  app.use("/api/resource", resourceRouter({ secret: env.JWT_SECRET, now, failureMode: env.REDIS_FAILURE_MODE }));
 
   // 5. Fallbacks: JSON 404 and error handler (no stack traces in responses).
   app.use((_req, res) => {

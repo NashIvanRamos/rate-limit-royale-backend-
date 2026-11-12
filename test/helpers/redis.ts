@@ -15,8 +15,8 @@ export interface TestRedis {
   stop(): Promise<void>;
 }
 
-export async function startRedis(): Promise<TestRedis> {
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
+export async function startRedis(fixedPort?: number): Promise<TestRedis> {
+  const port = fixedPort ?? 20_000 + Math.floor(Math.random() * 20_000);
   const child = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no", "--bind", "127.0.0.1"], {
     stdio: "ignore",
   });

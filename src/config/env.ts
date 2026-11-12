@@ -18,6 +18,8 @@ export interface Env {
   readonly REDIS_URL: string;
   /** Prefix for every Redis key, so several apps (or test suites) can share one Redis. */
   readonly REDIS_PREFIX: string;
+  /** What /api/resource does when the store is unreachable (tasks2/06). Login always fails closed. */
+  readonly REDIS_FAILURE_MODE: "open" | "closed";
 }
 
 const MIN_SECRET_LENGTH = 32;
@@ -81,6 +83,11 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
   const redisPrefix = source.REDIS_PREFIX ?? "rlr:";
   if (!/^[A-Za-z0-9:_.-]{0,32}$/.test(redisPrefix)) problems.push(`REDIS_PREFIX must be up to 32 of [A-Za-z0-9:_.-]`);
 
+  const failureMode = (source.REDIS_FAILURE_MODE?.trim() || "open").toLowerCase();
+  if (failureMode !== "open" && failureMode !== "closed") {
+    problems.push(`REDIS_FAILURE_MODE must be "open" or "closed", got "${source.REDIS_FAILURE_MODE}"`);
+  }
+
   if (problems.length > 0) throw new EnvError(problems);
 
   return Object.freeze({
@@ -93,5 +100,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     LIMITER_STORE: store as "memory" | "redis",
     REDIS_URL: redisUrl,
     REDIS_PREFIX: redisPrefix,
+    REDIS_FAILURE_MODE: failureMode as "open" | "closed",
   });
 }

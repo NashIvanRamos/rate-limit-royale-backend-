@@ -5,12 +5,18 @@
 import { Router } from "express";
 import type { StatsBackend } from "../middleware/stats.js";
 import type { RoundState } from "../state/round.js";
+import { storeUnavailable, warnDegraded } from "../state/failure.js";
 
 export function statsRouter(stats: StatsBackend, round: RoundState, nodeId: string): Router {
   const router = Router();
   router.get("/", async (_req, res) => {
     // Read the round at request time: a redeploy swaps the store for a fresh one.
-    res.status(200).json({ nodeId, store: round.backend, ...(await stats.read(await round.current())) });
+    try {
+      res.status(200).json({ nodeId, store: round.backend, ...(await stats.read(await round.current())) });
+    } catch (err) {
+      warnDegraded("stats read failed", err);
+      storeUnavailable(res, "store_unavailable");
+    }
   });
   return router;
 }

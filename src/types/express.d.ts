@@ -27,6 +27,8 @@ declare global {
       // ── res.locals: per request ──
       /** The round this request runs against, loaded once by loadRound. */
       round?: RoundView;
+      /** loadRound couldn't reach the store; routes apply the failure mode (tasks2/06). */
+      storeDown?: boolean;
       /** Set by authenticate on a 401, read by the stats middleware. */
       authFailureReason?: AuthFailureReason;
       /** Set by rateLimit once a key is selected, read by the stats middleware. */

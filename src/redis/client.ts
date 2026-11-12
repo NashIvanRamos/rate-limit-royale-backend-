@@ -9,6 +9,8 @@ import { SCRIPTS } from "./scripts.js";
 
 export type ScriptName = keyof typeof SCRIPTS;
 
+export const COMMAND_TIMEOUT_MS = 150;
+
 /** The Redis client plus one typed method per script. */
 export type AppRedis = Redis & {
   [K in ScriptName]: (...args: Array<string | number>) => Promise<unknown>;
@@ -16,8 +18,10 @@ export type AppRedis = Redis & {
 
 export function createRedis(url: string): AppRedis {
   const redis = new Redis(url, {
-    // Fail fast instead of queueing forever when Redis is down (fail open/closed is decided in tasks2/06).
+    // Fail fast when Redis is down: one retry, and no command waits longer than this. What the request does next is
+    // decided by REDIS_FAILURE_MODE (state/failure.ts).
     maxRetriesPerRequest: 1,
+    commandTimeout: COMMAND_TIMEOUT_MS,
     connectTimeout: 2_000,
     lazyConnect: false,
   }) as AppRedis;
