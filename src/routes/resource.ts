@@ -9,10 +9,11 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/authenticate.js";
 import { rateLimit } from "../middleware/rateLimit.js";
+import type { FailureMode } from "../state/failure.js";
 
-export function resourceRouter({ secret, now }: { secret: string; now: () => number }): Router {
+export function resourceRouter({ secret, now, failureMode }: { secret: string; now: () => number; failureMode?: FailureMode }): Router {
   const router = Router();
-  router.get("/", authenticate({ secret, now }), rateLimit(now), (req, res) => {
+  router.get("/", authenticate({ secret, now }), rateLimit(now, failureMode), (req, res) => {
     res.status(200).json({ ok: true, sub: req.auth!.sub, servedAt: now() });
   });
   return router;

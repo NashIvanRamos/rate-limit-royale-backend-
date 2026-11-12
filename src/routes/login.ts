@@ -14,6 +14,7 @@ import type { LoginGuardBackend } from "../auth/loginGuard.js";
 import { verifyCredentials } from "../config/users.js";
 import { setRetryAfter } from "../http/retryAfter.js";
 import { getClientKeyIp } from "../middleware/clientIp.js";
+import { storeUnavailable, warnDegraded } from "../state/failure.js";
 
 const MAX_USERNAME = 64;
 const MAX_PASSWORD = 128;
@@ -44,9 +45,18 @@ function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (s
   return async (req: Request, res: Response) => {
     const t = now();
     const ip = getClientKeyIp(req);
-    const generation = res.locals.round!.generation;
+    // Login always fails closed when the store is down: no lockout state means no brute-force protection.
+    const round = res.locals.round;
+    if (!round) return storeUnavailable(res, "store_unavailable");
+    const generation = round.generation;
 
-    const gate = await guard.check(ip, t, generation);
+    let gate;
+    try {
+      gate = await guard.check(ip, t, generation);
+    } catch (err) {
+      warnDegraded("login guard unavailable", err);
+      return storeUnavailable(res, "store_unavailable");
+    }
     if (!gate.allowed) {
       setRetryAfter(res, gate.retryAfterMs);
       res.status(429).json({ error: "rate_limited", retryAfterMs: gate.retryAfterMs });
@@ -61,7 +71,12 @@ function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (s
 
     if (!verifyCredentials(creds.username, creds.password)) {
       // Awaited, so the lockout is in place before the attacker sees this response and tries again.
-      await guard.recordFailure(ip, t, generation);
+      try {
+        await guard.recordFailure(ip, t, generation);
+      } catch (err) {
+        warnDegraded("login guard unavailable", err);
+        return storeUnavailable(res, "store_unavailable");
+      }
       res.status(401).json({ error: "invalid_credentials" });
       return;
     }

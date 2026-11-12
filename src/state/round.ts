@@ -11,6 +11,7 @@
 import type { RequestHandler } from "express";
 import type { LimiterStore } from "../algorithms/index.js";
 import type { DefenseConfig, DefenseSnapshot, DefenseState } from "../config/defense.js";
+import { warnDegraded } from "./failure.js";
 
 export interface RoundView {
   config: Readonly<DefenseConfig>;
@@ -53,10 +54,21 @@ export function isRoundPath(path: string): boolean {
   return p === "/api/resource" || p === "/api/login" || p === "/api/demo/expired-token";
 }
 
-/** Loads the round into `res.locals.round` for round paths. One Redis round-trip in redis mode, free in memory mode. */
+/**
+ * Loads the round into `res.locals.round` for round paths. One Redis round-trip in redis mode, free in memory mode.
+ * If the store is unreachable, the request continues with `res.locals.round` unset and `storeDown` set; the route
+ * then applies the failure mode (tasks2/06) instead of crashing with a 500.
+ */
 export function loadRound(state: RoundState): RequestHandler {
   return async (req, res, next) => {
-    if (isRoundPath(req.path)) res.locals.round = await state.current();
+    if (isRoundPath(req.path)) {
+      try {
+        res.locals.round = await state.current();
+      } catch (err) {
+        res.locals.storeDown = true;
+        warnDegraded("round state unavailable", err);
+      }
+    }
     next();
   };
 }

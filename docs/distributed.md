@@ -43,3 +43,23 @@ Proof that atomicity matters (`test/redisLimiters.test.ts`):
 - The same 50 through a naive GET-then-INCR limiter → **50 of 50** allowed. All 50 reads happen before any write.
 - Differential test: 600 random requests through the in-memory limiter and the Redis store give identical decisions
   (allowed, retryAfterMs, remaining) for all three algorithms.
+
+## Redis outage (tasks2/06)
+
+Killed Redis under the running 3-node cluster (`REDIS_FAILURE_MODE=open`, the default):
+
+| | Redis up | Redis down |
+|---|---|---|
+| `/api/resource` | 200 in ~4 ms | 200 in ~158 ms, `X-RateLimit-Degraded: true` (available, unprotected) |
+| `/api/login` | 200 | **503 `store_unavailable`** (always fails closed) |
+| `/api/health` | `healthy`, `redis: up` | `degraded`, `redis: down` (still HTTP 200) |
+
+With `REDIS_FAILURE_MODE=closed`, `/api/resource` answers **503 `limiter_unavailable`** + `Retry-After: 1` instead.
+When Redis comes back on the same port, everything recovers without restarting the nodes (`test/redisFailure.test.ts`).
+
+Why the default is open, and login is the exception: for a read API, briefly losing the rate limit is better than
+taking the whole API down for every user. Login is different: no lockout state means unlimited password guessing,
+so it fails closed.
+
+Next step, not built: degraded requests each wait for the 150 ms command timeout. A circuit breaker (skip Redis for a
+few seconds after N failures) would make them instant and take load off a struggling Redis.
