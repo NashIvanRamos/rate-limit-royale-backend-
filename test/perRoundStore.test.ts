@@ -137,3 +137,26 @@ describe("per-round limiter store on a Redis-backed process", { skip: SKIP_REDIS
     }
   });
 });
+
+describe("PerRoundLoginGuard generations (review fix on #16)", () => {
+  test("a stale request from an older round never resets or records into the current round", async () => {
+    const { PerRoundLoginGuard, LOGIN_LIMIT } = await import("../src/auth/loginGuard.js");
+    const shared = { check: async () => ({ allowed: true, retryAfterMs: 0, remaining: 5 }), recordFailure: async () => {} };
+    const guard = new PerRoundLoginGuard(shared);
+    const ip = "10.6.6.6";
+
+    // Round 7 (memory): lock the IP out.
+    for (let i = 0; i < LOGIN_LIMIT.maxFailures; i++) await guard.recordFailure(ip, 1_000, 7, "memory");
+    assert.equal((await guard.check(ip, 1_000, 7, "memory")).allowed, false);
+
+    // A late request still carrying round 6 must not reset round 7's lockout, and its failure doesn't count.
+    assert.equal((await guard.check(ip, 1_000, 6, "memory")).allowed, false);
+    await guard.recordFailure("10.0.0.9", 1_000, 6, "memory");
+    for (let i = 0; i < LOGIN_LIMIT.maxFailures - 1; i++) await guard.recordFailure("10.0.0.9", 1_000, 7, "memory");
+    assert.equal((await guard.check("10.0.0.9", 1_000, 7, "memory")).allowed, true, "the stale failure wasn't counted");
+    assert.equal((await guard.check(ip, 1_000, 7, "memory")).allowed, false, "round 7's lockout survived");
+
+    // A newer round clears it.
+    assert.equal((await guard.check(ip, 1_000, 8, "memory")).allowed, true);
+  });
+});

@@ -98,8 +98,12 @@ export class RedisLoginGuard implements LoginGuardBackend {
 
 /**
  * Per-round choice on a Redis-backed process (tasks2/09): lockouts in Redis (shared) for "redis" rounds, or in this
- * node's own memory for "memory" rounds. The memory guard is cleared whenever a new generation shows up, so a deploy
+ * node's own memory for "memory" rounds. The memory guard is cleared when a NEWER generation shows up, so a deploy
  * still resets lockouts on every node.
+ *
+ * Generations only move forward: a login that loaded generation N before a deploy can reach the guard after a request
+ * from N+1 already has. It must not reset the guard back to N (that would wipe the new round's lockouts), so a stale
+ * request checks against the current round and never records into it.
  */
 export class PerRoundLoginGuard implements LoginGuardBackend {
   private readonly memory = new LoginGuard();
@@ -108,7 +112,7 @@ export class PerRoundLoginGuard implements LoginGuardBackend {
   constructor(private readonly shared: LoginGuardBackend) {}
 
   private local(generation: number): LoginGuard {
-    if (generation !== this.memoryGeneration) {
+    if (generation > this.memoryGeneration) {
       this.memory.reset();
       this.memoryGeneration = generation;
     }
@@ -120,6 +124,10 @@ export class PerRoundLoginGuard implements LoginGuardBackend {
   }
 
   recordFailure(ip: string, now: number, generation: number, store: LimiterStoreKind = "redis"): Promise<void> {
-    return store === "memory" ? this.local(generation).recordFailure(ip, now) : this.shared.recordFailure(ip, now, generation);
+    if (store !== "memory") return this.shared.recordFailure(ip, now, generation);
+    const guard = this.local(generation);
+    // A failure from an older round doesn't count against the current one.
+    if (generation < this.memoryGeneration) return Promise.resolve();
+    return guard.recordFailure(ip, now);
   }
 }
