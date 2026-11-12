@@ -9,6 +9,7 @@
  * Options: --round 1..5|all (default all), --algorithm fixed|sliding|token, --max 5..100, --window 1000..60000,
  *          --keyBy ip|user|both. Defaults are the server's default defense (fixed, 10 per 10000ms, ip).
  *
+ * Per-round store (tasks2/09): `--limiter-store memory|redis` (Redis-backed servers only; omitted = server default).
  * Multi-node (tasks2): `--cluster` targets `npm run cluster` (load balancer :8080, nodes :3001-3003).
  *          `--nodes url1,url2,…` lists the nodes explicitly. Deploys and stats go to every node directly, attack
  *          traffic goes through BASE_URL (the load balancer), and the per-node split is printed.
@@ -34,7 +35,7 @@ const dim = (s: string) => paint(2, s);
 
 function usage(message: string): never {
   console.error(red(message));
-  console.error("Usage: npm run replay -- [--round 1..5|all] [--algorithm fixed|sliding|token] [--max N] [--window MS] [--keyBy ip|user|both]");
+  console.error("Usage: npm run replay -- [--round 1..5|all] [--algorithm fixed|sliding|token] [--max N] [--window MS] [--keyBy ip|user|both] [--limiter-store memory|redis] [--cluster]");
   process.exit(2);
 }
 
@@ -47,6 +48,7 @@ function parse() {
       window: { type: "string", default: String(DEFAULT_DEFENSE.windowMs) },
       keyBy: { type: "string", default: DEFAULT_DEFENSE.keyBy },
       cluster: { type: "boolean", default: false },
+      "limiter-store": { type: "string" },
       nodes: { type: "string" },
     },
   });
@@ -63,19 +65,26 @@ function parse() {
 
   const keyBys: KeyBy[] = values.keyBy === "both" ? ["user", "ip"] : [values.keyBy as KeyBy];
   const configs = keyBys.map((keyBy) => {
-    const result = validateDefenseConfig({
-      algorithm: values.algorithm,
-      maxRequests: Number(values.max),
-      windowMs: Number(values.window),
-      keyBy,
-    });
+    const result = validateDefenseConfig(
+      {
+        algorithm: values.algorithm,
+        maxRequests: Number(values.max),
+        windowMs: Number(values.window),
+        keyBy,
+        ...(values["limiter-store"] ? { limiterStore: values["limiter-store"] } : {}),
+      },
+      ["memory", "redis"], // the server does the real availability check
+    );
     if (!result.ok) usage(`Invalid config: ${result.issues.map((i) => `${i.field} ${i.message}`).join(", ")}`);
-    return result.config;
+    // Only send limiterStore when asked, so the server applies its own default (tasks2/09).
+    const { limiterStore, ...rest } = result.config;
+    return values["limiter-store"] ? { ...rest, limiterStore } : rest;
   });
   return { rounds, configs, baseUrl, nodeUrls };
 }
 
-const describeConfig = (c: DefenseConfig) => `${c.algorithm} · ${c.maxRequests} per ${c.windowMs}ms · key by ${c.keyBy}`;
+const describeConfig = (c: DefenseConfig) =>
+  `${c.algorithm} · ${c.maxRequests} per ${c.windowMs}ms · key by ${c.keyBy}${c.limiterStore ? ` · limiter store ${c.limiterStore}` : ""}`;
 
 function print(r: ReplayResult) {
   const t = r.tally;

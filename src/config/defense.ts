@@ -8,12 +8,25 @@ import { memoryStoreFactory } from "../algorithms/memoryStore.js";
 export type KeyBy = "ip" | "user";
 export const KEY_BY: readonly KeyBy[] = ["ip", "user"];
 
+/** Where a round's limiter counters and login lockouts live (tasks2/09). */
+export type LimiterStoreKind = "memory" | "redis";
+export const LIMITER_STORES: readonly LimiterStoreKind[] = ["memory", "redis"];
+
 export interface DefenseConfig {
   algorithm: Algorithm;
   maxRequests: number;
   windowMs: number;
   keyBy: KeyBy;
+  /**
+   * Optional per-round choice (tasks2/09). "memory" on a Redis-backed process = each node keeps its own counters and
+   * lockouts for this round (config and stats stay shared). Filled with the effective value in every response.
+   */
+  limiterStore?: LimiterStoreKind;
 }
+
+/** The store a round uses when the deploy doesn't say: Redis if this process has it, memory otherwise. */
+export const defaultLimiterStore = (available: readonly LimiterStoreKind[]): LimiterStoreKind =>
+  available.includes("redis") ? "redis" : "memory";
 
 /** Ranges match the frontend sliders (design doc §2). */
 export const LIMITS = Object.freeze({
@@ -109,6 +122,7 @@ export interface ValidationIssue {
 export type ValidationResult = { ok: true; config: DefenseConfig } | { ok: false; issues: ValidationIssue[] };
 
 const FIELDS = ["algorithm", "maxRequests", "windowMs", "keyBy"] as const;
+const OPTIONAL_FIELDS = ["limiterStore"] as const;
 
 function checkInt(value: unknown, field: string, { min, max }: { min: number; max: number }, issues: ValidationIssue[]) {
   if (typeof value !== "number" || !Number.isInteger(value)) {
@@ -124,8 +138,11 @@ function checkEnum(value: unknown, field: string, allowed: readonly string[], is
   }
 }
 
-/** Strict validation: every field required, no coercion ("10" is rejected), unknown fields rejected. */
-export function validateDefenseConfig(body: unknown): ValidationResult {
+/**
+ * Strict validation: every required field present, no coercion ("10" is rejected), unknown fields rejected.
+ * `limiterStores` is what this process supports; the returned config always carries the effective `limiterStore`.
+ */
+export function validateDefenseConfig(body: unknown, limiterStores: readonly LimiterStoreKind[] = ["memory"]): ValidationResult {
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
     return { ok: false, issues: [{ field: "body", message: "must be a JSON object" }] };
   }
@@ -133,7 +150,7 @@ export function validateDefenseConfig(body: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
 
   for (const key of Object.keys(input)) {
-    if (!(FIELDS as readonly string[]).includes(key)) issues.push({ field: key, message: "unknown field" });
+    if (![...FIELDS, ...OPTIONAL_FIELDS].includes(key as never)) issues.push({ field: key, message: "unknown field" });
   }
   for (const field of FIELDS) {
     if (!(field in input)) issues.push({ field, message: "is required" });
@@ -143,6 +160,12 @@ export function validateDefenseConfig(body: unknown): ValidationResult {
   if ("keyBy" in input) checkEnum(input.keyBy, "keyBy", KEY_BY, issues);
   if ("maxRequests" in input) checkInt(input.maxRequests, "maxRequests", LIMITS.maxRequests, issues);
   if ("windowMs" in input) checkInt(input.windowMs, "windowMs", LIMITS.windowMs, issues);
+  if ("limiterStore" in input) {
+    checkEnum(input.limiterStore, "limiterStore", LIMITER_STORES, issues);
+    if (LIMITER_STORES.includes(input.limiterStore as LimiterStoreKind) && !limiterStores.includes(input.limiterStore as LimiterStoreKind)) {
+      issues.push({ field: "limiterStore", message: `${input.limiterStore} is not available on this server (start it with LIMITER_STORE=redis)` });
+    }
+  }
 
   if (issues.length > 0) return { ok: false, issues };
   return {
@@ -152,6 +175,7 @@ export function validateDefenseConfig(body: unknown): ValidationResult {
       maxRequests: input.maxRequests as number,
       windowMs: input.windowMs as number,
       keyBy: input.keyBy as KeyBy,
+      limiterStore: (input.limiterStore as LimiterStoreKind | undefined) ?? defaultLimiterStore(limiterStores),
     },
   };
 }

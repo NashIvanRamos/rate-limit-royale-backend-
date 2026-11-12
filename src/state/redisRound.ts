@@ -9,15 +9,24 @@
  * faster, but then nodes could briefly disagree after a deploy. Correct and simple first.
  */
 import type { Algorithm, LimiterOptions, LimiterStore } from "../algorithms/index.js";
-import { DEFAULT_DEFENSE, type DefenseConfig, type DefenseSnapshot } from "../config/defense.js";
+import { DEFAULT_DEFENSE, type DefenseConfig, type DefenseSnapshot, type LimiterStoreKind } from "../config/defense.js";
 import { keyspace, type AppRedis } from "../redis/client.js";
 import { snapshotOf, type RoundState, type RoundView } from "./round.js";
 
-/** Builds the limiter store for one generation. Redis stores namespace their keys by it (tasks2/04). */
-export type GenerationStoreFactory = (algorithm: Algorithm, options: LimiterOptions, generation: number) => LimiterStore;
+/**
+ * Builds the limiter store for one generation. Redis stores namespace their keys by it (tasks2/04).
+ * `kind` is the round's choice (tasks2/09): "memory" = this node's own in-memory counters for the round.
+ */
+export type GenerationStoreFactory = (
+  algorithm: Algorithm,
+  options: LimiterOptions,
+  generation: number,
+  kind: LimiterStoreKind,
+) => LimiterStore;
 
 export class RedisRoundState implements RoundState {
   readonly backend = "redis" as const;
+  readonly limiterStores = ["memory", "redis"] as const;
   private readonly key: ReturnType<typeof keyspace>;
   /** The store for the latest generation seen, reused across requests. */
   private cached: { generation: number; store: LimiterStore } | null = null;
@@ -46,10 +55,12 @@ export class RedisRoundState implements RoundState {
     return snapshotOf(this.view(config, now, gen));
   }
 
-  private view(config: DefenseConfig, deployedAt: number, generation: number): RoundView {
+  private view(stored: DefenseConfig, deployedAt: number, generation: number): RoundView {
+    // Rounds deployed without a choice (including the boot default) use Redis: today's behaviour.
+    const config = { ...stored, limiterStore: stored.limiterStore ?? ("redis" as const) };
     if (this.cached?.generation !== generation) {
       const options = { maxRequests: config.maxRequests, windowMs: config.windowMs, epochMs: deployedAt };
-      this.cached = { generation, store: this.storeFactory(config.algorithm, options, generation) };
+      this.cached = { generation, store: this.storeFactory(config.algorithm, options, generation, config.limiterStore) };
     }
     return { config, deployedAt, generation, store: this.cached.store };
   }

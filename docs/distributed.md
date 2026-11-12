@@ -63,3 +63,17 @@ so it fails closed.
 
 Next step, not built: degraded requests each wait for the 150 ms command timeout. A circuit breaker (skip Redis for a
 few seconds after N failures) would make them instant and take load off a struggling Redis.
+
+## Per-round limiter store (tasks2/09)
+
+`POST /api/defense { …, "limiterStore": "memory" | "redis" }` picks, per round, whether limiter counters and login
+lockouts are shared (Redis) or per node (memory). Config, generation and stats stay in Redis either way, so one deploy
+reaches every node and `/api/stats` still covers the whole cluster. The field is optional: leaving it out keeps the
+old behaviour.
+
+Measured in one Redis-backed cluster run (`npm run experiment`): a round toggled to memory gives **33 / 32 / 15**, identical
+to a memory-only cluster. A redis round gives 13 / 12 / 5. `test/cluster.test.ts` asserts both in ONE cluster run
+(memory → redis → memory: 15 / 5 / 15 allowed at 5 per minute, and lockout after 15 / 5 / 15 failures).
+
+Run-to-run note: sticky + redis gave 14 in one experiment run and 13 in another. The 10s attack straddles a window
+boundary, so ±1 depending on timing is expected. Everything else matched exactly.

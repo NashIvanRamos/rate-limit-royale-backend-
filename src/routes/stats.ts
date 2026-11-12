@@ -12,7 +12,8 @@ export function statsRouter(stats: StatsBackend, round: RoundState, nodeId: stri
   router.get("/", async (_req, res) => {
     // Read the round at request time: a redeploy swaps the store for a fresh one.
     try {
-      res.status(200).json({ nodeId, store: round.backend, ...(await stats.read(await round.current())) });
+      const view = await round.current();
+      res.status(200).json({ nodeId, store: round.backend, limiterStore: view.config.limiterStore, ...(await stats.read(view)) });
     } catch (err) {
       warnDegraded("stats read failed", err);
       storeUnavailable(res, "store_unavailable");

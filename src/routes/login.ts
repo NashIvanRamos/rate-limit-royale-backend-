@@ -52,7 +52,7 @@ function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (s
 
     let gate;
     try {
-      gate = await guard.check(ip, t, generation);
+      gate = await guard.check(ip, t, generation, round.config.limiterStore);
     } catch (err) {
       warnDegraded("login guard unavailable", err);
       return storeUnavailable(res, "store_unavailable");
@@ -72,7 +72,7 @@ function loginHandler({ secret, guard, now }: LoginDeps, issue: Issue, extra: (s
     if (!verifyCredentials(creds.username, creds.password)) {
       // Awaited, so the lockout is in place before the attacker sees this response and tries again.
       try {
-        await guard.recordFailure(ip, t, generation);
+        await guard.recordFailure(ip, t, generation, round.config.limiterStore);
       } catch (err) {
         warnDegraded("login guard unavailable", err);
         return storeUnavailable(res, "store_unavailable");

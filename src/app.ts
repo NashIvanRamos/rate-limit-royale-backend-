@@ -4,7 +4,7 @@ import type { Env } from "./config/env.js";
 import { DEFAULT_DEFENSE, DefenseState } from "./config/defense.js";
 import type { LimiterStoreFactory } from "./algorithms/index.js";
 import { getClientKeyIp } from "./middleware/clientIp.js";
-import { LoginGuard, RedisLoginGuard, type LoginGuardBackend } from "./auth/loginGuard.js";
+import { LoginGuard, PerRoundLoginGuard, RedisLoginGuard, type LoginGuardBackend } from "./auth/loginGuard.js";
 import { defenseRouter } from "./routes/defense.js";
 import { expiredTokenRouter, loginRouter } from "./routes/login.js";
 import { resourceRouter } from "./routes/resource.js";
@@ -15,6 +15,7 @@ import { loadRound, MemoryRoundState, type RoundState } from "./state/round.js";
 import { RedisRoundState } from "./state/redisRound.js";
 import { RedisStats } from "./state/redisStats.js";
 import { RedisLimiterStore } from "./algorithms/redisStore.js";
+import { memoryStoreFactory } from "./algorithms/memoryStore.js";
 
 export interface AppDeps {
   /** Injectable clock (tests). Defaults to Date.now. */
@@ -39,11 +40,16 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
     // Shared across nodes: config, generation, limiter counters (atomic Lua scripts) and stats, all in Redis.
     const redis = createRedis(env.REDIS_URL);
     const injected = deps.limiterStoreFactory;
-    roundState = new RedisRoundState(redis, env.REDIS_PREFIX, now, (algorithm, options, generation) =>
-      injected ? injected(algorithm, options) : new RedisLimiterStore(redis, env.REDIS_PREFIX, algorithm, options, generation),
+    // Per round (tasks2/09): "redis" → shared Lua limiters; "memory" → this node's own counters for the round.
+    roundState = new RedisRoundState(redis, env.REDIS_PREFIX, now, (algorithm, options, generation, kind) =>
+      injected
+        ? injected(algorithm, options)
+        : kind === "memory"
+          ? memoryStoreFactory(algorithm, options)
+          : new RedisLimiterStore(redis, env.REDIS_PREFIX, algorithm, options, generation),
     );
     statsBackend = new RedisStats(redis, env.REDIS_PREFIX);
-    loginGuard = new RedisLoginGuard(redis, env.REDIS_PREFIX);
+    loginGuard = new PerRoundLoginGuard(new RedisLoginGuard(redis, env.REDIS_PREFIX));
     app.locals.redis = redis;
   } else {
     const memoryGuard = new LoginGuard();
@@ -90,7 +96,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
   // 1. Unlimited routes.
   // Always 200 while the process is up; reports a store outage instead of failing (tasks2/06).
   app.get("/api/health", async (_req, res) => {
-    let config: { algorithm: string; keyBy: string } | null = null;
+    let config: { algorithm: string; keyBy: string; limiterStore: string } | null = null;
     try {
       config = (await roundState.current()).config;
     } catch {
@@ -106,6 +112,9 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       ...(roundState.backend === "redis" ? { redis: storeUp ? "up" : "down", failureMode: env.REDIS_FAILURE_MODE } : {}),
       algorithm: config?.algorithm ?? null,
       keyBy: config?.keyBy ?? null,
+      // tasks2/09: what a round may choose here, and the current round's choice (null while Redis is down).
+      limiterStores: roundState.limiterStores,
+      limiterStore: config?.limiterStore ?? null,
     });
   });
   app.use("/api/defense", defenseRouter(roundState, now));

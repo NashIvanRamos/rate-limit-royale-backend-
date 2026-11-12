@@ -10,11 +10,12 @@
  */
 import type { RequestHandler } from "express";
 import type { LimiterStore } from "../algorithms/index.js";
-import type { DefenseConfig, DefenseSnapshot, DefenseState } from "../config/defense.js";
+import type { DefenseConfig, DefenseSnapshot, DefenseState, LimiterStoreKind } from "../config/defense.js";
 import { warnDegraded } from "./failure.js";
 
 export interface RoundView {
-  config: Readonly<DefenseConfig>;
+  /** Always carries the effective `limiterStore`. */
+  config: Readonly<DefenseConfig & { limiterStore: LimiterStoreKind }>;
   deployedAt: number;
   /** Bumped on every deploy. Redis keys are namespaced by it, so a deploy "resets" without deleting anything. */
   generation: number;
@@ -23,6 +24,8 @@ export interface RoundView {
 
 export interface RoundState {
   readonly backend: "memory" | "redis";
+  /** Limiter stores a round may choose on this process (tasks2/09). */
+  readonly limiterStores: readonly LimiterStoreKind[];
   current(): Promise<RoundView>;
   deploy(config: DefenseConfig, now: number): Promise<DefenseSnapshot>;
 }
@@ -36,11 +39,13 @@ export const snapshotOf = (view: RoundView): DefenseSnapshot => ({
 /** Adapts the in-memory DefenseState (synchronous, unchanged) to RoundState. */
 export class MemoryRoundState implements RoundState {
   readonly backend = "memory" as const;
+  readonly limiterStores = ["memory"] as const;
   constructor(readonly defense: DefenseState) {}
 
   current(): Promise<RoundView> {
     const d = this.defense;
-    return Promise.resolve({ config: d.config, deployedAt: d.deployedAt, generation: d.generation, store: d.store });
+    const config = { ...d.config, limiterStore: "memory" as const };
+    return Promise.resolve({ config, deployedAt: d.deployedAt, generation: d.generation, store: d.store });
   }
 
   deploy(config: DefenseConfig, now: number): Promise<DefenseSnapshot> {

@@ -7,7 +7,7 @@ const VALID: DefenseConfig = { algorithm: "sliding", maxRequests: 20, windowMs: 
 
 describe("validateDefenseConfig", () => {
   test("accepts a valid config", () => {
-    assert.deepEqual(validateDefenseConfig(VALID), { ok: true, config: VALID });
+    assert.deepEqual(validateDefenseConfig(VALID), { ok: true, config: { ...VALID, limiterStore: "memory" } });
   });
 
   test("accepts range boundaries", () => {
@@ -122,7 +122,7 @@ describe("/api/defense over HTTP", () => {
     const res = await fetch(`${server.baseUrl}/api/defense`);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(body.config, DEFAULT_DEFENSE);
+    assert.deepEqual(body.config, { ...DEFAULT_DEFENSE, limiterStore: "memory" });
     assert.equal(typeof body.deployedAt, "number");
   });
 
@@ -130,10 +130,10 @@ describe("/api/defense over HTTP", () => {
     const res = await post(VALID);
     assert.equal(res.status, 200);
     const body = await res.json();
-    assert.deepEqual(body, { config: VALID, deployedAt: clock.now(), windowEpochMs: clock.now() });
+    assert.deepEqual(body, { config: { ...VALID, limiterStore: "memory" }, deployedAt: clock.now(), windowEpochMs: clock.now() });
 
     const current = await (await fetch(`${server.baseUrl}/api/defense`)).json();
-    assert.deepEqual(current.config, VALID);
+    assert.deepEqual(current.config, { ...VALID, limiterStore: "memory" });
     assert.equal(server.app.locals.defense.store.name, "sliding");
   });
 
@@ -155,7 +155,7 @@ describe("/api/defense over HTTP", () => {
     const body = await res.json();
     assert.equal(body.error, "invalid_config");
     assert.deepEqual(body.details.map((d: { field: string }) => d.field).sort(), ["extra", "maxRequests"]);
-    assert.deepEqual(server.app.locals.defense.config, VALID);
+    assert.deepEqual(server.app.locals.defense.config, { ...VALID, limiterStore: "memory" });
   });
 
   test("POST malformed JSON → 400 JSON error, not HTML", async () => {

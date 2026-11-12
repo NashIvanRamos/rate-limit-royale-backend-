@@ -8,14 +8,15 @@ Defense: fixed, 10 per 10s, key by ip. Single-node baseline: round 5 → 13, rou
 |---|---|---|---|---|---|---|
 | round-robin | memory | 33 | 32 | 15 | 0 | ✓ |
 | round-robin | redis | 13 | 12 | 5 | 0 | ✓ |
+| round-robin | redis, round toggled to memory | 33 | 32 | 15 | 0 | ✓ |
 | sticky | memory | 13 | 12 | 5 | 0 | ✓ |
-| sticky | redis | 13 | 12 | 5 | 0 | ✓ |
+| sticky | redis | 14 | 12 | 5 | 0 | ✓ |
 
 **Sticky, attacker's node killed halfway through round 5:**
 
 | Store | Attacker through | Normal sticky run | Node killed |
 |---|---|---|---|
 | memory | **23** | 13 | node-3 |
-| redis | **13** | 13 | node-3 |
+| redis | **13** | 14 | node-3 |
 
 (In memory mode the killed node's stats die with it, so that run can't be cross-checked; that is the point.)

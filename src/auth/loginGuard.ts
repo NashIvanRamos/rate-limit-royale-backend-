@@ -9,6 +9,7 @@
  */
 import { SlidingWindowLogLimiter, type LimitDecision } from "../algorithms/index.js";
 import { keyspace, type AppRedis } from "../redis/client.js";
+import type { LimiterStoreKind } from "../config/defense.js";
 
 export const LOGIN_LIMIT = Object.freeze({ maxFailures: 5, windowMs: 60_000 });
 
@@ -18,8 +19,8 @@ export const LOGIN_LIMIT = Object.freeze({ maxFailures: 5, windowMs: 60_000 });
  */
 export interface LoginGuardBackend {
   /** Is this IP still allowed to attempt a login? Records nothing. */
-  check(ip: string, now: number, generation: number): Promise<LimitDecision>;
-  recordFailure(ip: string, now: number, generation: number): Promise<void>;
+  check(ip: string, now: number, generation: number, store?: LimiterStoreKind): Promise<LimitDecision>;
+  recordFailure(ip: string, now: number, generation: number, store?: LimiterStoreKind): Promise<void>;
 }
 
 export class LoginGuard implements LoginGuardBackend {
@@ -92,5 +93,33 @@ export class RedisLoginGuard implements LoginGuardBackend {
 
   async recordFailure(ip: string, now: number, generation: number): Promise<void> {
     await this.run(ip, now, generation, false);
+  }
+}
+
+/**
+ * Per-round choice on a Redis-backed process (tasks2/09): lockouts in Redis (shared) for "redis" rounds, or in this
+ * node's own memory for "memory" rounds. The memory guard is cleared whenever a new generation shows up, so a deploy
+ * still resets lockouts on every node.
+ */
+export class PerRoundLoginGuard implements LoginGuardBackend {
+  private readonly memory = new LoginGuard();
+  private memoryGeneration = 0;
+
+  constructor(private readonly shared: LoginGuardBackend) {}
+
+  private local(generation: number): LoginGuard {
+    if (generation !== this.memoryGeneration) {
+      this.memory.reset();
+      this.memoryGeneration = generation;
+    }
+    return this.memory;
+  }
+
+  check(ip: string, now: number, generation: number, store: LimiterStoreKind = "redis"): Promise<LimitDecision> {
+    return store === "memory" ? this.local(generation).check(ip, now) : this.shared.check(ip, now, generation);
+  }
+
+  recordFailure(ip: string, now: number, generation: number, store: LimiterStoreKind = "redis"): Promise<void> {
+    return store === "memory" ? this.local(generation).recordFailure(ip, now) : this.shared.recordFailure(ip, now, generation);
   }
 }
