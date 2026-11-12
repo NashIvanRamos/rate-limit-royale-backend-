@@ -10,7 +10,8 @@
     "dev": "tsx watch src/server.ts",
     "test": "node --import tsx --test \"test/**/*.test.ts\"",
     "smoke": "tsx scripts/smoke.ts",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "replay": "tsx scripts/replay.ts"
   },
   "keywords": [],
   "author": "",

@@ -287,21 +287,27 @@ attackPassed  = count(!legit && status 200)
 
 ## 6. Scoring (`scoring.js`, tunable)
 
+Backend reference (tested): `src/scenarios/results.ts` (`tally`, `attackProfile`, `score`). Scenario shapes and the
+five rounds are in `src/scenarios/types.ts` and `src/scenarios/rounds.ts`. `npm run replay -- --round 5 --keyBy both`
+replays a round against the real server, so you can check the browser engine against it.
+
 Design doc rules: blocked or rejected attacker requests earn XP, legit blocks cost XP, legit 401 (expired)
 costs nothing, full 500 XP needs zero legit blocks and attack traffic held near the configured limit.
 
 Suggested formula (tune once real numbers exist):
 ```js
-const windowsCovered = Math.floor(attackDurationMs / config.windowMs) + 1;
-// What a perfect per-IP defense would let through (an attacker deserves the configured quota, no more).
-const allowance = config.maxRequests * windowsCovered * attackerIpCount;
+// What a fair per-IP defense lets through: one full quota up front plus the configured rate for the attack's
+// duration. (An earlier `floor(duration / windowMs) + 1` version gave token bucket no credit for refill, so it
+// failed round 1 at ~0.6 containment while blocking 90% of the flood.)
+const allowance = config.maxRequests * (1 + attackDurationMs / config.windowMs) * attackerIpCount;
 const containment = attackPassed <= allowance * 1.15 ? 1 : (allowance * 1.15) / Math.max(1, attackPassed);
 const legitPenalty = Math.min(1, legitBlocks * 0.1);          // −10% per legit block
 const xpEarned = Math.round(500 * containment * (1 - legitPenalty));
 const cleared = legitBlocks === 0 && containment >= 0.8;
 ```
 Sanity checks you should see:
-- Round 2, fixed window → `attackPassed ≈ 2 × allowance` → containment ≈ 0.57, not cleared. Sliding window → cleared.
+- Round 2, fixed window → `attackPassed = 2 × maxRequests` vs. allowance ≈ 1.05 × maxRequests → containment ≈ 0.6, not cleared. Sliding and token → cleared.
+- Round 1, any algorithm with a sensible config → cleared.
 - Round 5, key by user → `attackPassed ≫ allowance` → near 0 XP. Key by IP → cleared.
 - Any round with `maxRequests: 5, windowMs: 60000` → legit blocks → heavy penalty.
 
