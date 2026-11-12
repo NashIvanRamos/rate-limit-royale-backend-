@@ -25,6 +25,20 @@ Also covered by `test/cluster.test.ts`: 30 requests from one IP at "5 per minute
 - `/api/stats` from **any one** node equals the whole cluster's tally (the replay matched it exactly).
 - Round 5: still **33** through, as expected. The limiter counters themselves are per node until tasks2/04.
 
-## After Redis limiters
+## Redis step 2: limiter counters in Redis, atomic Lua (tasks2/04)
 
-Pending tasks2/04–05.
+`npm run cluster -- --store redis`, round robin, same defense:
+
+| | Single node | 3 nodes, memory | 3 nodes, Redis |
+|---|---|---|---|
+| Round 5: attacker requests through | 13 | 33 | **13** |
+| Round 1: attacker requests through | 12 | 32 | **12** |
+| Round 4: failed logins before lockout | 5 | 15 | 15 (login guard still per node; tasks2/05) |
+
+Back to exactly the single-node numbers. Traffic was still split evenly over the 3 nodes, and `/api/stats` matched.
+
+Proof that atomicity matters (`test/redisLimiters.test.ts`):
+- 50 concurrent requests at a limit of 10 → **exactly 10** allowed by each Lua limiter.
+- The same 50 through a naive GET-then-INCR limiter → **50 of 50** allowed. All 50 reads happen before any write.
+- Differential test: 600 random requests through the in-memory limiter and the Redis store give identical decisions
+  (allowed, retryAfterMs, remaining) for all three algorithms.

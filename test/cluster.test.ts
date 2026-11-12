@@ -31,6 +31,8 @@ describe("nginx config rendering", () => {
   });
 });
 
+const hasRedis = spawnSync("which", ["redis-server"]).status === 0;
+
 for (const lb of ["round-robin", "sticky"] as LbMode[]) {
   describe(`cluster: ${lb}`, { skip: hasNginx ? false : "nginx not installed (brew install nginx)" }, () => {
     let cluster: Cluster;
@@ -91,3 +93,37 @@ for (const lb of ["round-robin", "sticky"] as LbMode[]) {
     }
   });
 }
+
+describe("cluster: round-robin + redis", { skip: hasNginx && hasRedis ? false : "needs nginx and redis-server" }, () => {
+  let cluster: Cluster;
+  before(async () => {
+    cluster = await startCluster({ lb: "round-robin", store: "redis", basePort: 13011, lbPort: 18081, redisPort: 16390 });
+  });
+  after(() => cluster?.stop());
+
+  test("the leak, fixed: 30 requests from one IP at 5 per minute → exactly 5 allowed across 3 nodes", async () => {
+    // One deploy through the load balancer is enough: the config is shared.
+    const deploy = await fetch(`${cluster.lbUrl}/api/defense`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ algorithm: "fixed", maxRequests: 5, windowMs: 60_000, keyBy: "ip" }),
+    });
+    assert.equal(deploy.status, 200);
+    const login = await fetch(`${cluster.lbUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.6.6.6" },
+      body: JSON.stringify({ username: "user01", password: "pass-user01" }),
+    });
+    const { token } = (await login.json()) as { token: string };
+    const served = new Set<string>();
+    let allowed = 0;
+    for (let i = 0; i < 30; i++) {
+      const res = await fetch(`${cluster.lbUrl}/api/resource`, { headers: { Authorization: `Bearer ${token}`, "X-Forwarded-For": "10.6.6.6" } });
+      await res.body?.cancel();
+      served.add(res.headers.get("x-node-id")!);
+      if (res.status === 200) allowed++;
+    }
+    assert.equal(served.size, 3, "traffic really was spread over 3 nodes");
+    assert.equal(allowed, 5);
+  });
+});
