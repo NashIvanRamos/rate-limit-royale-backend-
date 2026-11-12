@@ -413,6 +413,12 @@ client/
 ### Step 8 (optional, after backend task 07): server cross-check
 - Backend task 07 adds `GET /api/stats` (server-side 200/429/401 counts per round). Show
   "server confirms: 182 / 18 / 0" next to the client tally to prove the numbers are real.
+- Response (reset on every deploy): `{ since, resource: { total, s200, s401, s429, other, byReason:
+  { missing_token, invalid_signature, expired, malformed } }, login: { total, s200, s400, s401, s429, other },
+  trackedKeys, topKeys: [{ key, requests, allowed, blocked }], untrackedKeyRequests }`.
+- Fetch it once after the round's last response settles. `legitBlocks` is NOT in it: only the scenario
+  script knows who is legitimate, so that number stays client-side.
+- Round 5: `topKeys` shows 1 `ip:` key vs. many `user:` keys, a ready-made "50 keys vs 1 key" visual.
 
 ---
 

@@ -23,7 +23,10 @@ export function rateLimit(state: DefenseState, now: () => number): RequestHandle
   return (req, res, next) => {
     // Read config and limiter at request time, so a redeploy mid-round takes effect immediately.
     const { config, limiter } = state;
-    const decision = limiter.allow(selectKey(req, config), now());
+    const key = selectKey(req, config);
+    // Read by the stats middleware (task 07) for the per-key breakdown.
+    res.locals.rateLimitKey = key;
+    const decision = limiter.allow(key, now());
 
     res.setHeader("RateLimit-Limit", String(config.maxRequests));
     res.setHeader("RateLimit-Remaining", String(decision.remaining));
