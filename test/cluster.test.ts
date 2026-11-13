@@ -46,6 +46,16 @@ for (const lb of ["round-robin", "sticky"] as LbMode[]) {
       assert.deepEqual(ids, ["node-1", "node-2", "node-3"]);
     });
 
+    test("through NGINX, X-Node-Port is the node port it routed to (tasks2/10)", async () => {
+      const seen = new Map<string, string>();
+      for (let i = 0; i < 9; i++) {
+        const res = await fetch(`${cluster.lbUrl}/api/health`, { headers: { "X-Forwarded-For": `10.0.2.${i}` } });
+        await res.body?.cancel();
+        seen.set(res.headers.get("x-node-id")!, res.headers.get("x-node-port")!);
+      }
+      for (const [id, port] of seen) assert.equal(port, String(13000 + Number(id.replace("node-", ""))), `${id} → :${port}`);
+    });
+
     test("simulated client IP survives the NGINX hop", async () => {
       const res = await fetch(`${cluster.lbUrl}/api/demo/whoami`, { headers: { "X-Forwarded-For": "10.0.0.7" } });
       assert.deepEqual(await res.json(), { ip: "10.0.0.7" });

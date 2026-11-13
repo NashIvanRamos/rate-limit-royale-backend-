@@ -100,3 +100,21 @@ describe("NODE_ID (tasks2)", () => {
     assert.throws(() => loadEnv({ JWT_SECRET: TEST_SECRET, NODE_ID: "node 1; rm" }), /NODE_ID/);
   });
 });
+
+describe("X-Node-Port (tasks2/10)", () => {
+  test("every response carries the port the request arrived on; health reports it too; exposed via CORS", async () => {
+    const server = await startServer(testEnv({ NODE_ID: "node-9" }));
+    try {
+      const port = new URL(server.baseUrl).port;
+      const health = await fetch(`${server.baseUrl}/api/health`, { headers: { Origin: "http://localhost:5173" } });
+      assert.equal(health.headers.get("x-node-port"), port);
+      assert.equal((await health.json()).port, Number(port));
+      assert.match(health.headers.get("access-control-expose-headers") ?? "", /X-Node-Port/);
+      const missing = await fetch(`${server.baseUrl}/api/resource`);
+      assert.equal(missing.status, 401);
+      assert.equal(missing.headers.get("x-node-port"), port, "on errors too");
+    } finally {
+      await server.close();
+    }
+  });
+});
