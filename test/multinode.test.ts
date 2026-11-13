@@ -57,7 +57,7 @@ describe("replay with controlUrls", () => {
       assert.deepEqual(r.statsCheck.mismatches, []);
       assert.deepEqual(Object.keys(r.nodeSplit), ["a"]);
       const onB = (await (await fetch(`${b.baseUrl}/api/defense`)).json()) as { config: typeof config };
-      assert.deepEqual(onB.config, config, "node b got the deploy too");
+      assert.deepEqual(onB.config, { ...config, limiterStore: "memory" }, "node b got the deploy too");
     } finally {
       await a.close();
       await b.close();

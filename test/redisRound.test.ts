@@ -36,7 +36,7 @@ describe("redis round state", { skip: SKIP_REDIS }, () => {
       const health = await json(`${a.baseUrl}/api/health`);
       assert.equal(health.body.store, "redis");
       const d = await json(`${a.baseUrl}/api/defense`);
-      assert.deepEqual(d.body.config, DEFAULT_DEFENSE);
+      assert.deepEqual(d.body.config, { ...DEFAULT_DEFENSE, limiterStore: "redis" }, "boot default: redis on a Redis-backed process");
     } finally {
       await a.close();
     }

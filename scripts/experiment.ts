@@ -32,6 +32,8 @@ const COMBOS: Array<{ lb: LbMode; store: StoreMode }> = [
 interface Row {
   lb: LbMode;
   store: StoreMode;
+  /** Set for the tasks2/09 row: a Redis-backed cluster with this round deployed as `limiterStore: "memory"`. */
+  roundStore?: "memory";
   round5?: ReplayResult;
   round4?: ReplayResult;
   round1?: ReplayResult;
@@ -74,7 +76,7 @@ function table(rows: Row[], rounds: number[], config: DefenseConfig): string {
   ];
   for (const r of rows) {
     lines.push(
-      `| ${r.lb} | ${r.store} | ${rounds.includes(5) ? passed(r.round5) : "–"} | ${rounds.includes(1) ? passed(r.round1) : "–"} | ${rounds.includes(4) ? lockout(r.round4) : "–"} | ${legit(r.round5, r.round1, r.round4)} | ${statsOk(r.round5, r.round1, r.round4)} |`,
+      `| ${r.lb} | ${r.roundStore ? `${r.store}, round toggled to memory` : r.store} | ${rounds.includes(5) ? passed(r.round5) : "–"} | ${rounds.includes(1) ? passed(r.round1) : "–"} | ${rounds.includes(4) ? lockout(r.round4) : "–"} | ${legit(r.round5, r.round1, r.round4)} | ${statsOk(r.round5, r.round1, r.round4)} |`,
     );
   }
   const kills = rows.filter((r) => r.killed);
@@ -111,6 +113,21 @@ async function main() {
         if (round === 5) row.round5 = r;
         if (round === 4) row.round4 = r;
         if (round === 1) row.round1 = r;
+      }
+
+      // tasks2/09: same Redis-backed cluster, but the round deployed with limiterStore "memory" (the game's toggle).
+      if (lb === "round-robin" && store === "redis") {
+        const toggled: Row = { lb, store, roundStore: "memory" };
+        const memoryRound = { ...config, limiterStore: "memory" as const };
+        for (const round of rounds) {
+          const r = await run(cluster, round, memoryRound);
+          log(`  round ${round} with limiterStore memory: attacker ${r.tally.attackPassed}/${r.tally.attackTotal} through, stats ${r.statsCheck.matches ? "match" : "MISMATCH"}`);
+          if (round === 5) toggled.round5 = r;
+          if (round === 4) toggled.round4 = r;
+          if (round === 1) toggled.round1 = r;
+        }
+        rows.push(row, toggled);
+        continue;
       }
 
       if (lb === "sticky" && rounds.includes(5) && !values["no-kill"]) {

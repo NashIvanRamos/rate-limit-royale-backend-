@@ -23,7 +23,7 @@ export function defenseRouter(state: RoundState, now: () => number): Router {
   });
 
   router.post("/", async (req, res) => {
-    const result = validateDefenseConfig(req.body);
+    const result = validateDefenseConfig(req.body, state.limiterStores);
     if (!result.ok) {
       res.status(400).json({ error: "invalid_config", details: result.issues });
       return;

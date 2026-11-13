@@ -140,4 +140,40 @@ describe("cluster: round-robin + redis", { skip: hasNginx && hasRedis ? false : 
     }
     assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429, 429, 429, 429]);
   });
+
+  test("per-round toggle in ONE cluster run: memory round leaks ~3x, redis round doesn't (tasks2/09)", async () => {
+    const login = await fetch(`${cluster.lbUrl}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.6.6.7" },
+      body: JSON.stringify({ username: "user03", password: "pass-user03" }),
+    });
+    const { token } = (await login.json()) as { token: string };
+    const results: Record<string, { allowed: number; lockoutAfter: number }> = {};
+    for (const limiterStore of ["memory", "redis", "memory"] as const) {
+      const deploy = await fetch(`${cluster.lbUrl}/api/defense`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ algorithm: "fixed", maxRequests: 5, windowMs: 60_000, keyBy: "ip", limiterStore }),
+      });
+      assert.equal(deploy.status, 200);
+      let allowed = 0;
+      for (let i = 0; i < 30; i++) {
+        const res = await fetch(`${cluster.lbUrl}/api/resource`, { headers: { Authorization: `Bearer ${token}`, "X-Forwarded-For": "10.6.6.7" } });
+        await res.body?.cancel();
+        if (res.status === 200) allowed++;
+      }
+      let lockoutAfter = 0;
+      for (let i = 0; i < 20; i++) {
+        const res = await fetch(`${cluster.lbUrl}/api/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Forwarded-For": "10.6.6.8" },
+          body: JSON.stringify({ username: "user04", password: "wrong" }),
+        });
+        await res.body?.cancel();
+        if (res.status === 401) lockoutAfter++;
+      }
+      results[limiterStore] = { allowed, lockoutAfter };
+      assert.deepEqual(results[limiterStore], limiterStore === "memory" ? { allowed: 15, lockoutAfter: 15 } : { allowed: 5, lockoutAfter: 5 });
+    }
+  });
 });

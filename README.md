@@ -68,7 +68,9 @@ Config is validated once at boot (`src/config/env.ts`). Invalid config lists eve
 ## API reference
 
 Every error has the shape `{ error: string, reason?: string, retryAfterMs?: number }`. No stack traces in responses.
-Every response carries `X-Node-Id`. In Redis mode, an unreachable Redis gives `503 store_unavailable` /
+Every response carries `X-Node-Id`. `/api/health` reports `limiterStores` (what a round may choose on this process) and
+`limiterStore` (the current round's choice). `/api/stats` reports `limiterStore` too; in a memory round its `trackedKeys`
+is the answering node's own count. In Redis mode, an unreachable Redis gives `503 store_unavailable` /
 `limiter_unavailable` or an `X-RateLimit-Degraded: true` header ([details](#when-redis-is-down)).
 
 | Method | Path | Auth | Limited by | Purpose |
@@ -84,7 +86,8 @@ Every response carries `X-Node-Id`. In Redis mode, an unreachable Redis gives `5
 ### `POST /api/defense`
 ```jsonc
 // request: all four fields required, unknown fields rejected, no type coercion
-{ "algorithm": "fixed" | "sliding" | "token", "maxRequests": 5..100, "windowMs": 1000..60000, "keyBy": "ip" | "user" }
+{ "algorithm": "fixed" | "sliding" | "token", "maxRequests": 5..100, "windowMs": 1000..60000, "keyBy": "ip" | "user",
+  "limiterStore": "memory" | "redis" }   // optional, per round (see Scaling out). Echoed with its effective value.
 // 200
 { "config": { ... }, "deployedAt": 1794409469124, "windowEpochMs": 1794409469124 }
 // 400
@@ -365,14 +368,19 @@ round 1, and the login lockout starts after **5** failures. From `npm run experi
 |---|---|---|---|---|
 | round robin | memory | **33** | **32** | **15** |
 | round robin | redis | 13 | 12 | 5 |
+| round robin | redis, round toggled to `limiterStore: "memory"` | **33** | **32** | **15** |
 | sticky (hash on client IP) | memory | 13 | 12 | 5 |
-| sticky | redis | 13 | 12 | 5 |
+| sticky | redis | 13–14 | 12 | 5 |
 | sticky, **attacker's node killed mid-round** | memory | **23** | | |
 | sticky, attacker's node killed mid-round | redis | 13 | | |
 
 - **Round robin + memory:** each node has its own counters, so the attacker gets about 3× the limit, and 3× the
   password guesses.
 - **Redis:** one shared budget. The numbers go back to exactly the single-node ones.
+- **Toggle per round, same cluster:** deploy a round with `"limiterStore": "memory"` on a Redis-backed cluster, and each
+  node keeps its own counters and lockouts for that round (config and stats stay shared). Measured: **33 / 32 / 15**,
+  exactly the memory cluster's numbers. Deploy the next round with `"redis"`, or leave the field out, and it's back to
+  13 / 12 / 5. That's what the game's "Shared limiter state (Redis)" toggle uses, so no restart is needed.
 - **Sticky routing *looks* like it fixes it without Redis**, because each IP always lands on the same node. But kill
   that node and NGINX moves the attacker to a node with a fresh budget (13 → 23). It also piles a whole NAT'd office
   onto one node, and with key-by-user, a user who changes IP gets a new node and a new budget. **Sticky routing hides

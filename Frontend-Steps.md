@@ -454,3 +454,12 @@ Nothing, by default: `npm run dev` on `:3000` behaves exactly as before. Only if
 - **Possible new statuses** (Redis mode only, if Redis dies): `/api/resource` → 200 with `X-RateLimit-Degraded: true`
   (or 503 `limiter_unavailable` with `REDIS_FAILURE_MODE=closed`); `/api/login`, `/api/defense`, `/api/stats` → 503.
   Treat 503 like a network error: tally it separately, never as accepted or blocked.
+
+### Per-round limiter store (backend tasks2/09)
+
+- `POST /api/defense` accepts an optional `limiterStore: "memory" | "redis"`. Send it only when `/api/health`'s
+  `limiterStores` contains both values (older backends reject unknown fields). `"redis"` on a memory-only server → 400
+  `invalid_config` with `details: [{ field: "limiterStore", ... }]`.
+- `config.limiterStore` is always present in the deploy response and in `GET /api/defense`, set to the effective value.
+- `/api/health`: `limiterStores` and `limiterStore` (`null` while Redis is down). `/api/stats`: `limiterStore`. In a
+  memory round, `trackedKeys` is the answering node's own count (`nodeId` says which); `topKeys` stay cluster-wide.
