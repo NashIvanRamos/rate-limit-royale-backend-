@@ -76,13 +76,16 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       origin: env.CORS_ORIGIN,
       allowedHeaders: ["Content-Type", "Authorization", "X-Forwarded-For"],
       // Without this the browser can't read these headers on cross-origin responses.
-      exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "X-Node-Id"],
+      exposedHeaders: ["Retry-After", "RateLimit-Limit", "RateLimit-Remaining", "X-Node-Id", "X-Node-Port"],
     }),
   );
 
   // Which node answered. Lets the replay show how a load balancer spread the traffic (tasks2).
-  app.use((_req, res, next) => {
+  app.use((req, res, next) => {
     res.setHeader("X-Node-Id", env.NODE_ID);
+    // The port this connection actually arrived on: behind NGINX, the node port it routed to (3001–3003).
+    // Taken from the socket rather than env PORT, so it's right even when listening on an ephemeral port.
+    if (req.socket.localPort) res.setHeader("X-Node-Port", String(req.socket.localPort));
     next();
   });
 
@@ -95,7 +98,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
 
   // 1. Unlimited routes.
   // Always 200 while the process is up; reports a store outage instead of failing (tasks2/06).
-  app.get("/api/health", async (_req, res) => {
+  app.get("/api/health", async (req, res) => {
     let config: { algorithm: string; keyBy: string; limiterStore: string } | null = null;
     try {
       config = (await roundState.current()).config;
@@ -107,6 +110,7 @@ export function createApp(env: Env, deps: AppDeps = {}): Express {
       status: storeUp ? "healthy" : "degraded",
       service: "Rate Limit Royale API",
       nodeId: env.NODE_ID,
+      port: req.socket.localPort ?? null,
       uptimeS: Math.floor((now() - startedAt) / 1000),
       store: roundState.backend,
       ...(roundState.backend === "redis" ? { redis: storeUp ? "up" : "down", failureMode: env.REDIS_FAILURE_MODE } : {}),
